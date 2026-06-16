@@ -108,5 +108,5 @@ The project is at the end of the planning phase. The research question, competit
 
 ---
 
-_Internal review status: [ ] Yuvaraj · [ ] Haise_
+_Internal review status: [X] Yuvaraj · [X] Harsha_
 _Sent to advisor: —_
