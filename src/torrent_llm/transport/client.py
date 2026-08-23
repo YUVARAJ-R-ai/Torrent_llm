@@ -86,8 +86,17 @@ class ShardClient:
         hop: int = 0,
         is_token_ids: bool = False,
         position_ids: torch.Tensor | None = None,
+        logits_keep_last: int = 0,
     ) -> HopResult:
-        """Send one activation and wait for the shard's output."""
+        """Send one activation and wait for the shard's output.
+
+        Args:
+            logits_keep_last: Trailing logit positions the final shard should
+                return; ``0`` means all. Ignored by every shard but the last.
+                Generation only needs ``1``, and the difference is large --
+                logits are seq x vocab, so a full-sequence reply can be two
+                orders of magnitude bigger than the activation on the same hop.
+        """
         request_id = request_id or uuid.uuid4().hex
         message = self.codec.encode(tensor, request_id=request_id, hop=hop)
 
@@ -97,6 +106,7 @@ class ShardClient:
             kind=(pb.PAYLOAD_KIND_TOKEN_IDS if is_token_ids else pb.PAYLOAD_KIND_ACTIVATION),
             position_ids=(position_ids.flatten().tolist() if position_ids is not None else []),
             sent_unix_ns=time.time_ns(),
+            logits_keep_last=logits_keep_last,
         )
 
         started = time.perf_counter_ns()

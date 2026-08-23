@@ -21,6 +21,7 @@ from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
     CHANNEL_OPTIONS,
+    MAX_MESSAGE_BYTES,
     header_to_proto,
     message_from_proto,
 )
@@ -74,11 +75,16 @@ class ShardService(pb_grpc.ShardServiceServicer):
         _synchronize(self.runtime.device)
         compute_ns = time.perf_counter_ns() - started
 
+        tensor = output.tensor
+        if self.runtime.spec.is_last:
+            tensor = _trim_logits(tensor, request.logits_keep_last)
+
         reply_message = self.output_codec.encode(
-            output.tensor,
+            tensor,
             request_id=message.header.request_id,
             hop=message.header.hop + 1,
         )
+        _check_reply_size(reply_message.payload_bytes, self.runtime.spec.is_last)
         return pb.ForwardReply(
             header=header_to_proto(reply_message.header),
             payload=reply_message.payload,
@@ -133,6 +139,40 @@ def serve(
     server.start()
     logger.info("serving %s on %s:%d", runtime.spec, host, bound)
     return server, bound
+
+
+def _trim_logits(logits: torch.Tensor, keep_last: int) -> torch.Tensor:
+    """Return only the trailing ``keep_last`` positions of the logits.
+
+    ``0`` means every position. Defaulting to *all* is deliberate: silently
+    truncating what the caller asked for would corrupt a perplexity evaluation
+    in a way that looks like a modelling result, not a bug.
+    """
+    if keep_last <= 0:
+        return logits
+    return logits[:, -keep_last:, :]
+
+
+def _check_reply_size(nbytes: int, is_last: bool) -> None:
+    """Fail with an actionable message instead of a bare RESOURCE_EXHAUSTED.
+
+    The cap is almost always hit by a full-sequence logits reply, because logits
+    are seq x vocab and vocab dwarfs hidden_size. Saying so is more useful than
+    reporting two large numbers.
+    """
+    if nbytes <= MAX_MESSAGE_BYTES:
+        return
+    hint = (
+        " This is the final shard returning logits for every position "
+        "(batch x seq x vocab). Pass logits_keep_last=1 unless you genuinely "
+        "need all of them, as generation does not."
+        if is_last
+        else ""
+    )
+    raise ValueError(
+        f"reply payload is {nbytes / 1024**2:.0f} MiB, over the "
+        f"{MAX_MESSAGE_BYTES / 1024**2:.0f} MiB transport cap.{hint}"
+    )
 
 
 def _synchronize(device: torch.device) -> None:

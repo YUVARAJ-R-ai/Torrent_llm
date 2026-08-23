@@ -105,6 +105,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="runs/profile.jsonl")
     parser.add_argument("--link-mbps", type=float, default=100.0, help="link to project onto")
     parser.add_argument("--rtt-ms", type=float, default=30.0, help="RTT to project onto")
+    parser.add_argument(
+        "--project-compute-ms",
+        type=float,
+        default=None,
+        help=(
+            "shard compute to assume in the projection, instead of the measured "
+            "value. Use this when profiling on CPU: CPU prefill is orders of "
+            "magnitude slower than the GPU a real node would use, and feeding "
+            "that number into the projection makes every hop look compute-bound"
+        ),
+    )
     args = parser.parse_args(argv)
 
     seq_lens = [int(s) for s in args.seq_lens.split(",")]
@@ -131,7 +142,10 @@ def main(argv: list[str] | None = None) -> int:
                 for seq_len in seq_lens:
                     ids = torch.randint(0, 1000, (1, seq_len))
                     for _ in range(args.repeats):
-                        runner.forward(ids)
+                        # Ask the tail shard for one position of logits. The
+                        # full seq x vocab tensor is not what we are profiling
+                        # and on a large vocab it dwarfs every activation hop.
+                        runner.forward(ids, logits_keep_last=1)
                     print(f"  seq_len={seq_len} done", file=sys.stderr)
             records = profiler.records
     finally:
@@ -146,7 +160,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nverdict: {bandwidth_verdict(summaries)}")
 
     last = [r for r in records if r.seq_len == seq_lens[-1] and r.hop > 0]
-    compute_ms = (sum(r.compute_ns for r in last) / len(last) / 1e6) if last else 0.0
+    measured_ms = (sum(r.compute_ns for r in last) / len(last) / 1e6) if last else 0.0
+    compute_ms = args.project_compute_ms if args.project_compute_ms is not None else measured_ms
+
+    if args.device == "cpu" and args.project_compute_ms is None:
+        print(
+            f"\nWARNING: projecting with {measured_ms:.0f} ms of measured CPU compute. "
+            "CPU prefill is orders of magnitude slower than a real node's GPU, so this "
+            "makes every hop look compute-bound. Re-run with --device cuda, or pass "
+            "--project-compute-ms with a realistic figure.",
+            file=sys.stderr,
+        )
+
     project(config.model_id, seq_lens[-1], args.link_mbps, args.rtt_ms, compute_ms)
 
     print(f"\nrecords written to {Path(args.out).resolve()}")

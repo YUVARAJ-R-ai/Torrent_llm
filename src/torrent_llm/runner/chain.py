@@ -65,11 +65,18 @@ class ChainRunner:
         *,
         position_ids: torch.Tensor | None = None,
         phase: str = "prefill",
+        logits_keep_last: int = 0,
     ) -> ChainResult:
         """One full forward pass over the chain.
 
         Every hop is handed to the profiler, if one is attached, with the shape
         of what was actually sent — token ids on hop 0, activations after that.
+
+        Args:
+            logits_keep_last: Trailing logit positions to return; ``0`` means
+                all. Greedy decoding needs only ``1``, and asking for all of
+                them puts a batch x seq x vocab tensor on the wire, which on a
+                modern tokenizer is far larger than any activation in the chain.
         """
         request_id = uuid.uuid4().hex
         hops: list[HopResult] = []
@@ -87,7 +94,13 @@ class ChainRunner:
 
         for hop, client in enumerate(self.clients[1:], start=1):
             sent = result.tensor
-            result = client.forward(sent, request_id=request_id, hop=hop, position_ids=position_ids)
+            result = client.forward(
+                sent,
+                request_id=request_id,
+                hop=hop,
+                position_ids=position_ids,
+                logits_keep_last=logits_keep_last,
+            )
             hops.append(result)
             self._profile(result, request_id, hop, sent, phase)
 
@@ -132,7 +145,11 @@ class ChainRunner:
         ids = input_ids
         passes: list[ChainResult] = []
         for step in range(max_new_tokens):
-            result = self.forward(ids, phase="prefill" if step == 0 else "decode")
+            # Greedy decoding reads one position, so requesting the whole
+            # logits tensor would dominate the chain's bandwidth for nothing.
+            result = self.forward(
+                ids, phase="prefill" if step == 0 else "decode", logits_keep_last=1
+            )
             passes.append(result)
             next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             ids = torch.cat([ids, next_token.to(ids.device)], dim=1)

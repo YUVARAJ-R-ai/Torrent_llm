@@ -37,6 +37,15 @@ message ForwardRequest {
   // Client's monotonic-clock send time in nanoseconds. Used only for one-way
   // latency accounting in the profiler; clocks are not assumed synchronised.
   int64 sent_unix_ns = 5;
+  // How many trailing positions of logits the final shard should return.
+  // 0 means every position.
+  //
+  // This matters far more than it looks. Logits are batch x seq x vocab_size,
+  // and vocab dwarfs hidden_size on modern tokenizers -- 151936 vs 1024 on
+  // Qwen3-0.6B. A full-sequence logits reply at 1k context is ~594 MiB, about
+  // 148x the hidden-state activation on the same hop. Generation needs one
+  // position; only perplexity needs them all.
+  int32 logits_keep_last = 6;
 }
 
 message ForwardReply {

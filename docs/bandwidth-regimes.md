@@ -76,6 +76,62 @@ row of the table above is **not** what the current code would measure. Prefill
 measurements are unaffected and valid today. A KV cache is a prerequisite for any
 decode-regime measurement, and until it exists the decode column stays analytic.
 
+## Measured, not just computed
+
+First real run: Qwen3-0.6B, fp16, two shards on one RTX 4060 Laptop (8 GB), gRPC
+over loopback, 5 repeats per context length.
+(`runs/profile-qwen3-0.6b-cuda.jsonl`)
+
+| seq_len | activation on hop 1 | shard compute | transport | transport share |
+|---:|---:|---:|---:|---:|
+| 128 | 256 KiB | 76.8 ms | 6.2 ms | 8% |
+| 512 | 1.0 MiB | 85.8 ms | 9.3 ms | 10% |
+| 1024 | 2.0 MiB | 99.0 ms | 18.2 ms | 15% |
+| 2048 | 4.0 MiB | 210.9 ms | 45.1 ms | 20% |
+
+Two things fall out of this that were not obvious beforehand.
+
+**Loopback is not free.** With no network at all, transport is already 20% of the
+hop at 2k context. That is serialisation and gRPC framing, not bandwidth. It also
+sets a ceiling: the effective throughput this transport achieves tops out around
+**940 Mbps** on loopback, so on a gigabit LAN the implementation, not the link,
+would be the binding constraint. Worth knowing before anyone reports a LAN number
+as a network measurement.
+
+**With real GPU compute, prefill is firmly bandwidth-bound on a consumer link.**
+Projecting the measured 260 ms of shard compute onto 100 Mbps at 30 ms RTT:
+
+| Model | Payload/hop @ 2k | Wire time | Wire share |
+|---|---:|---:|---:|
+| Qwen3-0.6B | 4.0 MiB | 335 ms | 54% |
+| Qwen3-1.7B | 8.0 MiB | 671 ms | 70% |
+| Qwen3-8B / Llama-3-8B | 16.0 MiB | 1342 ms | 82% |
+| Llama-3-70B | 32.0 MiB | 2684 ms | **90%** |
+
+Every one of those is bandwidth-bound. The project's central premise holds for
+prefill, and now with a measured compute term rather than an assumed one.
+
+_Caveat: profiling on CPU instead produces ~15 s of prefill compute, which makes
+every hop look compute-bound. That is an artefact of the device, not a result.
+`scripts/profile_chain.py` warns when it happens and takes `--project-compute-ms`
+to override._
+
+## A payload nobody had counted
+
+The first real profiling run failed outright: `RESOURCE_EXHAUSTED, 622329932 vs
+536870912`. Not the activation — the **reply**. The final shard returns logits,
+which are `batch × seq × vocab_size`, and vocab dwarfs hidden_size on a modern
+tokenizer: 151936 against 1024 on Qwen3-0.6B. A full-sequence logits reply at 1k
+context is 594 MiB, roughly **148× the hidden-state activation on the same hop**.
+
+The chain's largest single payload was never an activation at all. Generation
+reads one position, so `logits_keep_last` now lets the caller ask for just that;
+the default stays "all" because silently truncating logits would corrupt a
+perplexity evaluation in a way that looks like a modelling result.
+
+Worth carrying into the design: any future component that returns something
+vocab-shaped over the network needs the same treatment.
+
 ## How to reproduce
 
 ```bash
