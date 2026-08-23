@@ -46,7 +46,40 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 
 ## Project Status
 
-Planning complete; implementation starting. Work is tracked on the **[GitHub Project board](https://github.com/users/YUVARAJ-R-ai/projects/5)** across 4 one-week sprints that map to the research phases:
+The layer-sharded pipeline is built and measured; the compressor is next.
+
+### What runs today
+
+```
+torrent-shard --config configs/local-2shard.yaml --index 0   # node A: layers 0-13
+torrent-shard --config configs/local-2shard.yaml --index 1   # node B: layers 14-27
+torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France is"
+```
+
+| Component | State |
+|---|---|
+| Layer-sharded model hosting (#4) | built — sharded logits are **bit-exact** against the monolithic model |
+| gRPC activation transport (#5) | built — 512 MiB message cap, per-hop compute/transport split reported |
+| Per-hop bandwidth profiler (#6) | built — JSONL records, hop summaries, projection to unrun model sizes |
+| Codec seam | built — `RawCodec` is the uncompressed control; the learned compressor drops in behind the same interface |
+| Learned low-rank compressor (#8) | not started — the contribution |
+| KV cache | not started — required before any decode-regime measurement |
+
+See [docs/setup.md](docs/setup.md) to install and run, and
+[docs/adr/001-minimal-harness.md](docs/adr/001-minimal-harness.md) for why this is
+a purpose-built harness rather than a Petals fork.
+
+### One finding that reshapes the claim
+
+[docs/bandwidth-regimes.md](docs/bandwidth-regimes.md) — the "50–200 MB per forward
+pass" figure describes **prefill**. A *cached decode* hop ships one position: 16 KiB
+on a 70B model, ~1.3 ms on a 100 Mbps link against a 30 ms round trip. Compression
+buys 6.6× on a 70B prefill hop and **loses 5%** on a cached decode hop, because
+there was never any wire time to save. The claim to defend is therefore scoped to
+prefill and to inter-agent latent messages — which is the multi-agent case anyway,
+since every Planner→Critic→Solver handoff is a fresh sequence rather than a token.
+
+Work is tracked on the **[GitHub Project board](https://github.com/users/YUVARAJ-R-ai/projects/5)** across 4 one-week sprints that map to the research phases:
 
 | Sprint | Focus |
 |--------|-------|
@@ -63,11 +96,11 @@ Planning complete; implementation starting. Work is tracked on the **[GitHub Pro
 
 | Layer | Choice |
 |-------|--------|
-| Language / framework | Python 3.11 + PyTorch 2.x |
-| Base model | Llama-3-8B (dev) → 70B (final runs) |
-| P2P / DHT | [Hivemind](https://github.com/learning-at-home/hivemind) |
-| Sharding baseline | [Petals](https://github.com/bigscience-workshop/petals) primitives |
-| Compression | Custom MLA-style low-rank adapters *(the contribution)* |
+| Language / framework | Python 3.12 + PyTorch 2.x + transformers 5.x |
+| Base model | Qwen3-0.6B/1.7B (dev) → Qwen3-8B (confirmatory) → 70B projected analytically |
+| P2P / DHT | [Hivemind](https://github.com/learning-at-home/hivemind) *(post-MVP, issue #15)* |
+| Sharding | Purpose-built harness in `src/torrent_llm/shard` — [not a Petals fork](docs/adr/001-minimal-harness.md) |
+| Compression | Custom MLA-style low-rank adapters *(the contribution)* — plugs into the existing `Codec` interface |
 | Multi-agent | RecursiveMAS RecursiveLink |
 | Eval / tracking | lm-eval-harness + Weights & Biases |
 

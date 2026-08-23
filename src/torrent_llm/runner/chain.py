@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import torch
 
 from torrent_llm.codec import get_codec
+from torrent_llm.profile import HopProfiler
 from torrent_llm.runner.config import TopologyConfig
 from torrent_llm.transport import HopResult, ShardClient
 
@@ -50,20 +51,30 @@ class ChainResult:
 class ChainRunner:
     """Walks token ids through every shard and returns logits."""
 
-    def __init__(self, config: TopologyConfig) -> None:
+    def __init__(self, config: TopologyConfig, *, profiler: HopProfiler | None = None) -> None:
         self.config = config
+        self.profiler = profiler
         self.clients = [
             ShardClient(node.address, get_codec(config.codec, **config.codec_args))
             for node in config.nodes
         ]
 
     def forward(
-        self, input_ids: torch.Tensor, *, position_ids: torch.Tensor | None = None
+        self,
+        input_ids: torch.Tensor,
+        *,
+        position_ids: torch.Tensor | None = None,
+        phase: str = "prefill",
     ) -> ChainResult:
-        """One full forward pass over the chain."""
+        """One full forward pass over the chain.
+
+        Every hop is handed to the profiler, if one is attached, with the shape
+        of what was actually sent — token ids on hop 0, activations after that.
+        """
         request_id = uuid.uuid4().hex
         hops: list[HopResult] = []
 
+        sent = input_ids
         result = self.clients[0].forward(
             input_ids,
             request_id=request_id,
@@ -72,12 +83,13 @@ class ChainRunner:
             position_ids=position_ids,
         )
         hops.append(result)
+        self._profile(result, request_id, 0, sent, phase)
 
         for hop, client in enumerate(self.clients[1:], start=1):
-            result = client.forward(
-                result.tensor, request_id=request_id, hop=hop, position_ids=position_ids
-            )
+            sent = result.tensor
+            result = client.forward(sent, request_id=request_id, hop=hop, position_ids=position_ids)
             hops.append(result)
+            self._profile(result, request_id, hop, sent, phase)
 
         if not result.is_final:
             raise RuntimeError(
@@ -85,6 +97,25 @@ class ChainRunner:
                 "the topology is probably missing its tail shard"
             )
         return ChainResult(logits=result.tensor, hops=hops, request_id=request_id)
+
+    def _profile(
+        self,
+        result: HopResult,
+        request_id: str,
+        hop: int,
+        sent: torch.Tensor,
+        phase: str,
+    ) -> None:
+        if self.profiler is None:
+            return
+        self.profiler.record(
+            result,
+            request_id=request_id,
+            address=self.clients[hop].address,
+            shape=tuple(sent.shape),
+            dtype=str(sent.dtype).removeprefix("torch."),
+            phase=phase,
+        )
 
     def generate(
         self, input_ids: torch.Tensor, *, max_new_tokens: int = 16
@@ -100,8 +131,8 @@ class ChainRunner:
         """
         ids = input_ids
         passes: list[ChainResult] = []
-        for _ in range(max_new_tokens):
-            result = self.forward(ids)
+        for step in range(max_new_tokens):
+            result = self.forward(ids, phase="prefill" if step == 0 else "decode")
             passes.append(result)
             next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             ids = torch.cat([ids, next_token.to(ids.device)], dim=1)

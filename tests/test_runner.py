@@ -188,3 +188,34 @@ def test_shipped_configs_parse_and_plan(name):
     assert len(specs) == len(config.nodes)
     assert specs[0].is_first and specs[-1].is_last
     assert getattr(torch, config.dtype) is not None
+
+
+def test_runner_profiles_every_hop(served_chain, input_ids, tmp_path):
+    """The profiler must see one record per hop, with the shape actually sent."""
+    from torrent_llm.profile import HopProfiler, RunMetadata
+
+    metadata = RunMetadata(run_id="t", model_id="tiny", dtype="float32", codec="raw", num_shards=2)
+    with HopProfiler(path=tmp_path / "p.jsonl", metadata=metadata) as profiler:
+        with ChainRunner(served_chain, profiler=profiler) as runner:
+            runner.forward(input_ids)
+        records = profiler.records
+
+    assert [r.hop for r in records] == [0, 1]
+    # Hop 0 sends token ids, so there is no hidden dimension yet.
+    assert records[0].hidden_size == 0
+    assert records[0].seq_len == input_ids.shape[1]
+    # Hop 1 sends the activation.
+    assert records[1].hidden_size == 64
+    assert records[1].sent_bytes == input_ids.shape[1] * 64 * 4
+
+
+def test_generate_labels_the_first_pass_prefill_and_the_rest_decode(served_chain, input_ids):
+    from torrent_llm.profile import HopProfiler
+
+    with HopProfiler() as profiler:
+        with ChainRunner(served_chain, profiler=profiler) as runner:
+            runner.generate(input_ids, max_new_tokens=3)
+        phases = [r.phase for r in profiler.records]
+
+    # 3 passes x 2 hops, first pass prefill.
+    assert phases == ["prefill"] * 2 + ["decode"] * 4
