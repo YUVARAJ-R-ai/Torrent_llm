@@ -87,6 +87,8 @@ class ShardClient:
         is_token_ids: bool = False,
         position_ids: torch.Tensor | None = None,
         logits_keep_last: int = 0,
+        use_cache: bool = False,
+        end_of_request: bool = False,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -96,6 +98,19 @@ class ShardClient:
                 Generation only needs ``1``, and the difference is large --
                 logits are seq x vocab, so a full-sequence reply can be two
                 orders of magnitude bigger than the activation on the same hop.
+            use_cache: Opt in to a server-side KV cache scoped to this
+                ``request_id`` (issue #24). Once a session exists, ``tensor``
+                only needs to carry the *new* positions -- not the whole
+                sequence -- because the shard remembers everything sent under
+                this ``request_id`` so far. Must stay ``True`` across every call
+                of one generation: turning it off partway through starts a cold
+                recompute instead of continuing the cached one, silently, since
+                there is nothing in the wire protocol that would flag the switch
+                as a mistake.
+            end_of_request: Set on the final call of a generation so the shard
+                drops its cached state immediately rather than waiting for the
+                server's idle-session sweep. Meaningless, and ignored, when
+                ``use_cache`` is ``False``.
         """
         request_id = request_id or uuid.uuid4().hex
         message = self.codec.encode(tensor, request_id=request_id, hop=hop)
@@ -107,6 +122,8 @@ class ShardClient:
             position_ids=(position_ids.flatten().tolist() if position_ids is not None else []),
             sent_unix_ns=time.time_ns(),
             logits_keep_last=logits_keep_last,
+            use_cache=use_cache,
+            end_of_request=end_of_request,
         )
 
         started = time.perf_counter_ns()

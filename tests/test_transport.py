@@ -219,3 +219,132 @@ def test_oversized_intermediate_reply_reports_the_cap_without_the_logits_hint():
         _check_reply_size(700 * 1024**2, is_last=False)
 
     _check_reply_size(1024, is_last=False)  # under the cap: no error
+
+
+# --- KV cache over the wire (issue #24) ---
+#
+# The in-process case (tests/test_shard_runtime.py) already proves the math.
+# What is specific to this layer is the *session lifecycle*: use_cache has to
+# survive a real request/reply round trip and be reusable across separate gRPC
+# calls, end_of_request has to actually free server memory, and a client that
+# forgets use_cache has to fall back to the old stateless behaviour rather than
+# silently doing something wrong.
+
+
+def cached_generate(clients, prompt_ids, num_new_tokens, request_id="gen-1"):
+    """Drive greedy decoding across the chain using the server-side cache."""
+
+    def step(tensor, *, is_token_ids, is_last_call):
+        result = clients[0].forward(
+            tensor,
+            hop=0,
+            is_token_ids=is_token_ids,
+            request_id=request_id,
+            use_cache=True,
+            end_of_request=is_last_call,
+        )
+        for hop, client in enumerate(clients[1:], start=1):
+            result = client.forward(
+                result.tensor,
+                hop=hop,
+                request_id=request_id,
+                use_cache=True,
+                end_of_request=is_last_call,
+                logits_keep_last=1,
+            )
+        return result
+
+    tokens = [prompt_ids]
+    result = step(prompt_ids, is_token_ids=True, is_last_call=num_new_tokens == 1)
+    next_token = result.tensor.argmax(dim=-1)
+    tokens.append(next_token)
+
+    for i in range(1, num_new_tokens):
+        result = step(next_token, is_token_ids=True, is_last_call=(i == num_new_tokens - 1))
+        next_token = result.tensor.argmax(dim=-1)
+        tokens.append(next_token)
+
+    return torch.cat(tokens, dim=1)
+
+
+def test_cached_generation_over_grpc_matches_greedy_decode_on_the_reference_model(
+    tiny_model, chain, input_ids
+):
+    with torch.inference_mode():
+        expected = input_ids
+        for _ in range(3):
+            nxt = tiny_model(input_ids=expected).logits[:, -1:, :].argmax(dim=-1)
+            expected = torch.cat([expected, nxt], dim=1)
+
+    generated = cached_generate(chain, input_ids, num_new_tokens=3)
+
+    assert torch.equal(generated, expected)
+
+
+def test_decode_step_after_prefill_sends_a_single_token_not_the_whole_sequence(chain, input_ids):
+    request_id = "gen-payload-size"
+
+    def step(tensor, *, is_token_ids, is_last_call):
+        # Both hops must be continued on every call, prefill included -- sending
+        # only hop 0 and skipping hop 1 would leave hop 1's session stuck at the
+        # prefill length while hop 0's moves on, which is a real way to corrupt
+        # a session and not something this test is trying to exercise.
+        r0 = chain[0].forward(
+            tensor,
+            hop=0,
+            is_token_ids=is_token_ids,
+            request_id=request_id,
+            use_cache=True,
+            end_of_request=is_last_call,
+        )
+        r1 = chain[1].forward(
+            r0.tensor,
+            hop=1,
+            request_id=request_id,
+            use_cache=True,
+            end_of_request=is_last_call,
+            logits_keep_last=1,
+        )
+        return r0, r1
+
+    prefill_r0, prefill_r1 = step(input_ids, is_token_ids=True, is_last_call=False)
+    next_token = prefill_r1.tensor.argmax(dim=-1)
+
+    decode_r0, _ = step(next_token, is_token_ids=True, is_last_call=True)
+
+    # This is the entire point of the cache: hop 0's decode-step payload is one
+    # token, regardless of how long the prompt was.
+    assert decode_r0.sent_bytes == 1 * 8  # one int64 token id
+    assert decode_r0.sent_bytes < prefill_r0.sent_bytes
+
+
+def test_starting_a_new_generation_with_a_reused_request_id_after_cleanup_is_correct(
+    tiny_model, chain, input_ids
+):
+    # Runs one full generation to completion (freeing the session via
+    # end_of_request on the last call), then runs a second, different
+    # generation reusing the same request_id. If cleanup had not actually
+    # happened, the second generation would silently continue the first one's
+    # cache and diverge from the reference model.
+    request_id = "reused-id"
+    cached_generate(chain, input_ids, num_new_tokens=2, request_id=request_id)
+
+    torch.manual_seed(99)
+    second_prompt = torch.randint(0, 256, (1, 5))
+    with torch.inference_mode():
+        expected = second_prompt
+        for _ in range(2):
+            nxt = tiny_model(input_ids=expected).logits[:, -1:, :].argmax(dim=-1)
+            expected = torch.cat([expected, nxt], dim=1)
+
+    generated = cached_generate(chain, second_prompt, num_new_tokens=2, request_id=request_id)
+
+    assert torch.equal(generated, expected)
+
+
+def test_use_cache_false_is_unaffected_and_stays_the_documented_default(chain, input_ids):
+    # Every test elsewhere in this file calls .forward() without touching
+    # use_cache at all -- this just makes the default explicit as a contract.
+    hops = walk(chain, input_ids)
+
+    assert hops[-1].is_final

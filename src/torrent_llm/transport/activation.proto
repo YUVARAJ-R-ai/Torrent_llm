@@ -46,6 +46,23 @@ message ForwardRequest {
   // 148x the hidden-state activation on the same hop. Generation needs one
   // position; only perplexity needs them all.
   int32 logits_keep_last = 6;
+
+  // Opt in to a server-side KV cache for this request_id (issue #24). When
+  // true, the shard reuses (or creates, on the first call) a cache keyed by
+  // request_id, and the caller only needs to send the *new* positions from the
+  // second call onward -- not the whole growing sequence. gRPC calls are
+  // otherwise stateless, so this cache genuinely lives on the server between
+  // calls; it is not something the client holds or ships.
+  bool use_cache = 7;
+
+  // Tells the shard this is the last call for this request_id, so it should
+  // drop the cached state immediately after replying rather than waiting for
+  // the server's TTL sweep to notice it went idle. Best-effort: a client that
+  // crashes or disconnects mid-generation never gets to send this, which is
+  // exactly why the TTL sweep exists as the backstop rather than the only
+  // mechanism -- an explicit signal keeps the *common* case (generation runs
+  // to completion) from leaving cache memory parked until the sweep gets to it.
+  bool end_of_request = 8;
 }
 
 message ForwardReply {

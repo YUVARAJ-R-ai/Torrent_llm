@@ -25,6 +25,7 @@ from torrent_llm.transport.convert import (
     header_to_proto,
     message_from_proto,
 )
+from torrent_llm.transport.sessions import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ShardService(pb_grpc.ShardServiceServicer):
         codec: Codec,
         *,
         model_id: str = "unknown",
+        session_ttl_seconds: float = 300.0,
     ) -> None:
         self.runtime = runtime
         self.codec = codec
@@ -46,6 +48,11 @@ class ShardService(pb_grpc.ShardServiceServicer):
         # them would corrupt the very quality metric the benchmark reports, so
         # the final hop always goes out uncompressed regardless of the codec.
         self.output_codec: Codec = RawCodec() if runtime.spec.is_last else codec
+        # One cache per in-flight request, scoped to this shard's own layers.
+        # See sessions.py for why both an explicit end_of_request signal and a
+        # TTL sweep exist -- the former handles generation finishing normally,
+        # the latter handles a client that never gets to say so.
+        self.sessions = SessionStore(ttl_seconds=session_ttl_seconds)
 
     def Forward(self, request: pb.ForwardRequest, context) -> pb.ForwardReply:  # noqa: N802
         try:
@@ -65,15 +72,31 @@ class ShardService(pb_grpc.ShardServiceServicer):
             else None
         )
 
+        # get_or_create both looks up and touches the session, so it must run
+        # even on a client that only ever sends one request per request_id --
+        # cache=None below is what makes that indistinguishable from the
+        # original stateless behaviour.
+        cache = (
+            self.sessions.get_or_create(message.header.request_id) if request.use_cache else None
+        )
+
         started = time.perf_counter_ns()
         if request.kind == pb.PAYLOAD_KIND_TOKEN_IDS:
             output = self.runtime.forward(
-                input_ids=tensor.to(torch.long), position_ids=position_ids
+                input_ids=tensor.to(torch.long), position_ids=position_ids, cache=cache
             )
         else:
-            output = self.runtime.forward(hidden_states=tensor, position_ids=position_ids)
+            output = self.runtime.forward(
+                hidden_states=tensor, position_ids=position_ids, cache=cache
+            )
         _synchronize(self.runtime.device)
         compute_ns = time.perf_counter_ns() - started
+
+        if request.end_of_request:
+            # Best-effort cleanup for the common case: generation finished and
+            # said so. A client that crashes mid-generation never reaches this
+            # line, which is exactly why SessionStore also carries a TTL sweep.
+            self.sessions.drop(message.header.request_id)
 
         tensor = output.tensor
         if self.runtime.spec.is_last:

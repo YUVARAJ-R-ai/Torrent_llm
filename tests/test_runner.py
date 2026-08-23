@@ -219,3 +219,78 @@ def test_generate_labels_the_first_pass_prefill_and_the_rest_decode(served_chain
 
     # 3 passes x 2 hops, first pass prefill.
     assert phases == ["prefill"] * 2 + ["decode"] * 4
+
+
+# --- KV cache in generate() (issue #24) ---
+
+
+def test_generate_defaults_to_using_the_cache(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        _, passes = runner.generate(input_ids, max_new_tokens=3)
+
+    # Decode hops send one token; prefill sends the whole prompt. If caching
+    # were silently off, every hop's sent_bytes would be identical to the first.
+    decode_hop0_bytes = [p.hops[0].sent_bytes for p in passes[1:]]
+    assert all(b == 8 for b in decode_hop0_bytes)  # one int64 token id
+    assert passes[0].hops[0].sent_bytes > decode_hop0_bytes[0]
+
+
+def test_generate_with_cache_disabled_matches_the_reference_model_too(
+    tiny_model, served_chain, input_ids
+):
+    # The explicit control path: no server-side state, every step re-sends the
+    # whole growing prefix. Slower and more bandwidth, but must still be
+    # correct -- it is what someone reaches for to isolate whether a bug is in
+    # caching or elsewhere in the chain.
+    with ChainRunner(served_chain) as runner:
+        ids, _ = runner.generate(input_ids, max_new_tokens=3, use_cache=False)
+
+    expected = input_ids
+    with torch.inference_mode():
+        for _ in range(3):
+            nxt = tiny_model(input_ids=expected).logits[:, -1, :].argmax(-1, keepdim=True)
+            expected = torch.cat([expected, nxt], dim=1)
+
+    assert torch.equal(ids, expected)
+
+
+def test_generate_with_cache_disabled_resends_the_whole_prefix_every_step(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        _, passes = runner.generate(input_ids, max_new_tokens=3, use_cache=False)
+
+    sent_lengths = [p.hops[0].sent_bytes // 8 for p in passes]  # int64 token count
+    prompt_len = input_ids.shape[1]
+    assert sent_lengths == [prompt_len, prompt_len + 1, prompt_len + 2]
+
+
+def test_cached_and_uncached_generation_agree_on_the_same_tokens(served_chain, input_ids):
+    # The two code paths compute the same thing through a different amount of
+    # redundant recomputation; they must not be able to silently diverge.
+    with ChainRunner(served_chain) as runner:
+        cached_ids, _ = runner.generate(input_ids, max_new_tokens=4, use_cache=True)
+    with ChainRunner(served_chain) as runner:
+        uncached_ids, _ = runner.generate(input_ids, max_new_tokens=4, use_cache=False)
+
+    assert torch.equal(cached_ids, uncached_ids)
+
+
+def test_a_second_generation_after_the_first_completes_is_unaffected(
+    tiny_model, served_chain, input_ids
+):
+    # end_of_request on generate()'s last step must actually free the session,
+    # or a second, unrelated generation on the same chain would silently
+    # inherit leftover cache state from the first.
+    with ChainRunner(served_chain) as runner:
+        runner.generate(input_ids, max_new_tokens=2)
+
+        torch.manual_seed(123)
+        second_prompt = torch.randint(0, 256, (1, 4))
+        second_ids, _ = runner.generate(second_prompt, max_new_tokens=2)
+
+    expected = second_prompt
+    with torch.inference_mode():
+        for _ in range(2):
+            nxt = tiny_model(input_ids=expected).logits[:, -1, :].argmax(-1, keepdim=True)
+            expected = torch.cat([expected, nxt], dim=1)
+
+    assert torch.equal(second_ids, expected)
