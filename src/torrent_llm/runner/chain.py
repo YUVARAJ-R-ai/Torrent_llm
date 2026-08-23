@@ -69,6 +69,7 @@ class ChainRunner:
         request_id: str | None = None,
         use_cache: bool = False,
         end_of_request: bool = False,
+        expected_cache_position: int | None = None,
     ) -> ChainResult:
         """One full forward pass over the chain.
 
@@ -96,6 +97,11 @@ class ChainRunner:
                 the ``end_of_request`` field in ``activation.proto`` for why
                 this exists alongside a TTL-based backstop rather than instead
                 of one.
+            expected_cache_position: How many positions each shard's cache
+                should already hold (issue #28). Every shard in the chain sees
+                the same value, because they advance in lockstep -- shard 3
+                having processed a different number of positions than shard 0
+                is itself the bug this catches.
         """
         request_id = request_id or uuid.uuid4().hex
         hops: list[HopResult] = []
@@ -109,6 +115,7 @@ class ChainRunner:
             position_ids=position_ids,
             use_cache=use_cache,
             end_of_request=end_of_request,
+            expected_cache_position=expected_cache_position,
         )
         hops.append(result)
         self._profile(result, request_id, 0, sent, phase)
@@ -123,6 +130,7 @@ class ChainRunner:
                 logits_keep_last=logits_keep_last,
                 use_cache=use_cache,
                 end_of_request=end_of_request,
+                expected_cache_position=expected_cache_position,
             )
             hops.append(result)
             self._profile(result, request_id, hop, sent, phase)
@@ -186,6 +194,11 @@ class ChainRunner:
         # What gets sent *this* step: the whole prompt once, then one token at a
         # time once the cache is carrying the rest of the context.
         sent = input_ids
+        # How many positions every shard's cache should already hold before this
+        # step. Starts at 0 (nothing cached yet) and advances by whatever was
+        # sent. Checking it is what turns a lost session into an error instead
+        # of silently wrong output -- see issue #28.
+        cache_position = 0
         passes: list[ChainResult] = []
         for step in range(max_new_tokens):
             is_last_step = step == max_new_tokens - 1
@@ -196,8 +209,10 @@ class ChainRunner:
                 request_id=request_id,
                 use_cache=use_cache,
                 end_of_request=use_cache and is_last_step,
+                expected_cache_position=cache_position if use_cache else None,
             )
             passes.append(result)
+            cache_position += sent.shape[1]
             next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(ids.device)
             ids = torch.cat([ids, next_token], dim=1)
             sent = next_token if use_cache else ids

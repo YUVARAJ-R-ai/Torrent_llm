@@ -14,6 +14,7 @@ from concurrent import futures
 
 import grpc
 import torch
+from transformers.cache_utils import Cache
 
 from torrent_llm.codec import Codec, RawCodec
 from torrent_llm.shard import ShardRuntime
@@ -28,6 +29,15 @@ from torrent_llm.transport.convert import (
 from torrent_llm.transport.sessions import SessionStore
 
 logger = logging.getLogger(__name__)
+
+
+class CacheSessionLost(Exception):
+    """The client's view of a cache session disagrees with this shard's (issue #28).
+
+    Its own type rather than a ValueError because it maps to a distinct gRPC
+    status: this is a precondition failure the caller can *recover* from by
+    re-prefilling, not an invalid request it should stop sending.
+    """
 
 
 class ShardService(pb_grpc.ShardServiceServicer):
@@ -57,6 +67,13 @@ class ShardService(pb_grpc.ShardServiceServicer):
     def Forward(self, request: pb.ForwardRequest, context) -> pb.ForwardReply:  # noqa: N802
         try:
             return self._forward(request)
+        except CacheSessionLost as exc:
+            # Not INTERNAL: nothing is broken here and the caller can recover by
+            # re-prefilling. FAILED_PRECONDITION is what says "your assumption
+            # about my state was wrong", which is exactly the situation.
+            logger.warning("cache session lost on %s: %s", self.runtime.spec, exc)
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, f"{self.runtime.spec}: {exc}")
+            raise
         except Exception as exc:  # noqa: BLE001 - must not kill the server process
             logger.exception("forward failed on %s", self.runtime.spec)
             context.abort(grpc.StatusCode.INTERNAL, f"{self.runtime.spec}: {exc}")
@@ -79,6 +96,8 @@ class ShardService(pb_grpc.ShardServiceServicer):
         cache = (
             self.sessions.get_or_create(message.header.request_id) if request.use_cache else None
         )
+        if cache is not None and request.HasField("expected_cache_position"):
+            self._assert_cache_agrees(cache, request.expected_cache_position)
 
         started = time.perf_counter_ns()
         if request.kind == pb.PAYLOAD_KIND_TOKEN_IDS:
@@ -114,7 +133,30 @@ class ShardService(pb_grpc.ShardServiceServicer):
             kind=pb.PAYLOAD_KIND_ACTIVATION,
             compute_ns=compute_ns,
             is_final=self.runtime.spec.is_last,
+            cache_length=self._cache_length(cache),
         )
+
+    def _assert_cache_agrees(self, cache: Cache, expected: int) -> None:
+        """Refuse the request if this shard's cache is not where the client thinks.
+
+        Queried at ``spec.start`` rather than layer 0 for the same reason the
+        runtime does: layer indices are global, so a middle shard's cache only
+        has entries at the range it owns and layer 0 always reads as empty.
+        """
+        actual = cache.get_seq_length(layer_idx=self.runtime.spec.start)
+        if actual == expected:
+            return
+        raise CacheSessionLost(
+            f"cache holds {actual} positions but the client expected {expected}. "
+            "The session was probably lost -- this shard restarted, the session "
+            "expired, or the request reached a different node than earlier steps. "
+            "Re-run the prefill for this request_id rather than continuing; "
+            "continuing would compute from the wrong position and silently "
+            "produce wrong output."
+        )
+
+    def _cache_length(self, cache: Cache | None) -> int:
+        return 0 if cache is None else cache.get_seq_length(layer_idx=self.runtime.spec.start)
 
     def Info(self, request: pb.InfoRequest, context) -> pb.InfoReply:  # noqa: N802
         spec = self.runtime.spec

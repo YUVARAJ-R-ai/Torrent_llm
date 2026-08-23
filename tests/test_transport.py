@@ -348,3 +348,75 @@ def test_use_cache_false_is_unaffected_and_stays_the_documented_default(chain, i
     hops = walk(chain, input_ids)
 
     assert hops[-1].is_final
+
+
+# --- lost cache sessions must fail loudly (issue #28) ---
+#
+# Before this check existed, a decode step sent to a shard that had lost the
+# session built a fresh empty cache, derived position_ids = [0] from it, and ran
+# a mid-generation token as if it were the first of a new sequence. Generation
+# continued and the output was quietly wrong -- the worst possible shape for a
+# failure in a swarm where nodes leaving mid-request is the normal case.
+
+
+def test_a_lost_session_is_refused_rather_than_computed_from_zero(chain, input_ids):
+    import grpc
+
+    # A decode-shaped call under a request_id no shard has ever seen: exactly
+    # what a restarted shard, an expired session, or a request landing on a
+    # different replica looks like from the server's side.
+    with pytest.raises(grpc.RpcError) as excinfo:
+        chain[0].forward(
+            torch.tensor([[42]]),
+            hop=0,
+            is_token_ids=True,
+            request_id="never-prefilled",
+            use_cache=True,
+            expected_cache_position=6,
+        )
+
+    assert excinfo.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert "cache holds 0 positions but the client expected 6" in excinfo.value.details()
+    # The message has to say what to do, not just what was wrong.
+    assert "Re-run the prefill" in excinfo.value.details()
+
+
+def test_a_healthy_session_passes_the_check(chain, input_ids):
+    request_id = "healthy"
+    prefill = chain[0].forward(
+        input_ids,
+        hop=0,
+        is_token_ids=True,
+        request_id=request_id,
+        use_cache=True,
+        expected_cache_position=0,
+    )
+
+    assert prefill.cache_length == input_ids.shape[1]
+
+    decode = chain[0].forward(
+        torch.tensor([[42]]),
+        hop=0,
+        is_token_ids=True,
+        request_id=request_id,
+        use_cache=True,
+        expected_cache_position=input_ids.shape[1],
+    )
+
+    assert decode.cache_length == input_ids.shape[1] + 1
+
+
+def test_the_check_is_opt_in_so_a_caller_that_does_not_track_position_still_works(chain, input_ids):
+    # Omitting expected_cache_position skips validation entirely. Presence, not
+    # value, is what arms the check -- 0 is a legitimate "this is the prefill".
+    result = chain[0].forward(
+        input_ids, hop=0, is_token_ids=True, request_id="unchecked", use_cache=True
+    )
+
+    assert result.cache_length == input_ids.shape[1]
+
+
+def test_uncached_requests_report_no_cache_length(chain, input_ids):
+    result = chain[0].forward(input_ids, hop=0, is_token_ids=True, request_id="nocache")
+
+    assert result.cache_length == 0

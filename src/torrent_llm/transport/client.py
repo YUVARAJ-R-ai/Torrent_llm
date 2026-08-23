@@ -45,6 +45,10 @@ class HopResult:
     #: Time the peer spent in the forward pass, as reported by the peer.
     compute_ns: int
     codec: str
+    #: Positions the peer's cache holds after this call; 0 when uncached.
+    #: Lets a caller notice session drift on the reply it already has rather
+    #: than only on the next request it sends.
+    cache_length: int = 0
 
     @property
     def transport_ns(self) -> int:
@@ -89,6 +93,7 @@ class ShardClient:
         logits_keep_last: int = 0,
         use_cache: bool = False,
         end_of_request: bool = False,
+        expected_cache_position: int | None = None,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -111,6 +116,13 @@ class ShardClient:
                 drops its cached state immediately rather than waiting for the
                 server's idle-session sweep. Meaningless, and ignored, when
                 ``use_cache`` is ``False``.
+            expected_cache_position: How many positions the caller believes the
+                shard's cache already holds (issue #28). When given, the shard
+                refuses the request with ``FAILED_PRECONDITION`` if its cache
+                disagrees, instead of computing from a wrong offset and
+                returning quietly wrong output. ``None`` skips the check, which
+                is only appropriate when the caller genuinely does not track
+                position -- passing it is strongly preferred.
         """
         request_id = request_id or uuid.uuid4().hex
         message = self.codec.encode(tensor, request_id=request_id, hop=hop)
@@ -124,6 +136,7 @@ class ShardClient:
             logits_keep_last=logits_keep_last,
             use_cache=use_cache,
             end_of_request=end_of_request,
+            expected_cache_position=expected_cache_position,
         )
 
         started = time.perf_counter_ns()
@@ -142,6 +155,7 @@ class ShardClient:
             wall_ns=wall_ns,
             compute_ns=reply.compute_ns,
             codec=message.header.codec,
+            cache_length=reply.cache_length,
         )
 
     def close(self) -> None:

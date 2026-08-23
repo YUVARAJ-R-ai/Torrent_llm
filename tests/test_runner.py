@@ -334,3 +334,32 @@ def test_a_second_generation_after_the_first_completes_is_unaffected(
             expected = torch.cat([expected, nxt], dim=1)
 
     assert torch.equal(second_ids, expected)
+
+
+def test_generate_advances_the_expected_cache_position_each_step(served_chain, input_ids):
+    """A full cached generation must satisfy the position check at every step.
+
+    If ChainRunner.generate() miscounted -- forgetting that prefill advances the
+    cache by the whole prompt, say -- every step after the first would be
+    refused. This asserts the counting is right by the generation simply
+    completing with the check armed.
+    """
+    with ChainRunner(served_chain) as runner:
+        ids, passes = runner.generate(input_ids, max_new_tokens=4)
+
+    assert ids.shape == (1, input_ids.shape[1] + 4)
+    # The cache ends at prompt + (steps - 1), not prompt + steps: the prefill
+    # caches the whole prompt, each later step feeds back the *previous* token,
+    # and the final generated token is returned without ever being sent back in.
+    final_hop = passes[-1].hops[0]
+    assert final_hop.cache_length == input_ids.shape[1] + 3
+
+
+def test_uncached_generation_does_not_arm_the_position_check(served_chain, input_ids):
+    # With use_cache=False there is no session to be out of step with, and
+    # sending a position expectation would be meaningless.
+    with ChainRunner(served_chain) as runner:
+        ids, passes = runner.generate(input_ids, max_new_tokens=2, use_cache=False)
+
+    assert ids.shape == (1, input_ids.shape[1] + 2)
+    assert all(hop.cache_length == 0 for result in passes for hop in result.hops)
