@@ -24,3 +24,10 @@ wandb/
 models/
 *.safetensors
 *.bin
+
+# Dashboard (issue #27) -- a Node project nested in a Python repo, so its
+# artifacts need their own entries rather than inheriting anything above.
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/next-env.d.ts

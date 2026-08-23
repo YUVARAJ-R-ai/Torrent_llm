@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/*
+ * Palette from the data-viz reference instance. The two series colors used
+ * anywhere in this dashboard (slots 1 and 2) were run through the palette
+ * validator in both modes before being written down here:
+ *
+ *   light  #2a78d6 / #eb6834  -- CVD ΔE 24.7, normal ΔE 33.6, both >= 3:1
+ *   dark   #3987e5 / #d95926  -- CVD ΔE 26.8, normal ΔE 31.8, both >= 3:1
+ *
+ * Dark values are declared under BOTH the media query and the [data-theme]
+ * scope: the media query covers the OS setting, the data-theme scope covers an
+ * explicit toggle, and the :not()/:where() guards let an explicit choice win in
+ * either direction.
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --page-plane: #f9f9f7;
+
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+
+  /* Categorical slots 1 and 2. Never cycled; a third series would come from
+     slot 3 (aqua #1baf7a), not a generated hue. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+
+  --status-good: #0ca30c;
+  --status-critical: #d03b3b;
+  --success-text: #006300;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+
+    --surface-1: #1a1a19;
+    --page-plane: #0d0d0d;
+
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+
+    --status-good: #0ca30c;
+    --status-critical: #d03b3b;
+    --success-text: #0ca30c;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --page-plane: #0d0d0d;
+
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+
+  --status-good: #0ca30c;
+  --status-critical: #d03b3b;
+  --success-text: #0ca30c;
+}
+
+@theme inline {
+  --color-surface: var(--surface-1);
+  --color-plane: var(--page-plane);
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+  --color-hairline: var(--border);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+}
+
+body {
+  background: var(--page-plane);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Axis ticks and table columns must align vertically; standalone figures use
+   the default proportional figures. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
