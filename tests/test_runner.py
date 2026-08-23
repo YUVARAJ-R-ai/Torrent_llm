@@ -150,6 +150,46 @@ def test_boundaries_that_disagree_with_the_node_count_are_rejected():
         config.shard_plan()
 
 
+def test_weights_override_the_even_split():
+    config = TopologyConfig.from_dict(
+        {
+            "model_id": "m",
+            "num_layers": 30,
+            "weights": [1.0, 2.0],
+            "nodes": [{"address": "a:1"}, {"address": "b:1"}],
+        }
+    )
+
+    assert [(s.start, s.end) for s in config.shard_plan()] == [(0, 10), (10, 30)]
+
+
+def test_weights_that_disagree_with_the_node_count_are_rejected():
+    config = TopologyConfig.from_dict(
+        {
+            "model_id": "m",
+            "num_layers": 32,
+            "weights": [1.0, 1.0, 1.0],
+            "nodes": [{"address": "a:1"}, {"address": "b:1"}],
+        }
+    )
+
+    with pytest.raises(ValueError, match="2 nodes but the plan produced 3 shards"):
+        config.shard_plan()
+
+
+def test_boundaries_and_weights_together_is_rejected_as_ambiguous():
+    with pytest.raises(ValueError, match="both 'boundaries' and 'weights'"):
+        TopologyConfig.from_dict(
+            {
+                "model_id": "m",
+                "num_layers": 32,
+                "boundaries": [16],
+                "weights": [1.0, 1.0],
+                "nodes": [{"address": "a:1"}, {"address": "b:1"}],
+            }
+        )
+
+
 def test_codec_can_be_a_name_or_a_block_with_args():
     plain = TopologyConfig.from_dict(
         {"model_id": "m", "num_layers": 4, "nodes": [{"address": "a:1"}], "codec": "raw"}

@@ -79,6 +79,76 @@ def plan_even(num_layers: int, num_shards: int) -> list[ShardSpec]:
     return specs
 
 
+def plan_weighted(num_layers: int, weights: list[float]) -> list[ShardSpec]:
+    """Split ``num_layers`` proportionally to relative per-node capability (issue #17).
+
+    ``weights`` are relative sizes only — ``[1, 2]`` and ``[10, 20]`` produce
+    identical plans. A weight might come from VRAM, a FLOPs benchmark, or a
+    hand-picked ratio; this function only cares that "more weight -> more
+    layers", not what the weight measures. This is what a real two-machine rig
+    with a 4060 (8 GB) and, say, a 3090 (24 GB) actually needs: an even split
+    would size every shard for the *weaker* box, wasting the stronger one's
+    headroom.
+
+    Two things naive rounding of independent proportional shares gets wrong,
+    both handled explicitly here:
+
+    * Rounding each share separately does not generally sum back to
+      ``num_layers``. This uses the largest-remainder method (Hamilton
+      apportionment — the same algorithm used to apportion legislative seats
+      to states/provinces by population): floor every share, then hand out
+      the leftover layers one at a time to the shares with the largest
+      fractional remainder, breaking ties by node order for a deterministic
+      result.
+    * A very small weight can floor to zero layers even when there are
+      formally "enough" layers to go around (e.g. weights ``[100, 1, 1]``
+      over 5 layers floors to ``[4, 0, 0]``). Every shard needs at least one
+      layer regardless of its weight — a shard hosting zero layers is not a
+      lighter shard, it is a missing one, and ``ShardSpec`` already rejects
+      that. So each shard is guaranteed one layer up front, and only the
+      *remaining* layers are distributed proportionally.
+    """
+    if not weights:
+        raise ValueError("need at least one weight")
+    if any(w <= 0 for w in weights):
+        raise ValueError(f"weights must be positive, got {weights}")
+    if len(weights) > num_layers:
+        raise ValueError(
+            f"cannot split {num_layers} layers across {len(weights)} weighted shards; "
+            "every shard must own at least one layer"
+        )
+
+    num_shards = len(weights)
+    guaranteed = [1] * num_shards
+    remaining = num_layers - num_shards
+
+    if remaining > 0:
+        total_weight = sum(weights)
+        exact_extra = [w / total_weight * remaining for w in weights]
+        floor_extra = [int(x) for x in exact_extra]
+        shortfall = remaining - sum(floor_extra)
+
+        # Largest fractional remainder gets the leftover layers first; ties
+        # keep node order, matching plan_even's "earliest shards get the
+        # remainder" convention so the two functions read consistently.
+        by_remainder = sorted(
+            range(num_shards), key=lambda i: (exact_extra[i] - floor_extra[i], -i), reverse=True
+        )
+        for i in by_remainder[:shortfall]:
+            floor_extra[i] += 1
+
+        widths = [g + e for g, e in zip(guaranteed, floor_extra, strict=True)]
+    else:
+        widths = guaranteed
+
+    specs: list[ShardSpec] = []
+    cursor = 0
+    for i, width in enumerate(widths):
+        specs.append(ShardSpec(index=i, start=cursor, end=cursor + width, num_layers=num_layers))
+        cursor += width
+    return specs
+
+
 def plan_explicit(num_layers: int, boundaries: list[int]) -> list[ShardSpec]:
     """Build a plan from explicit cut points.
 

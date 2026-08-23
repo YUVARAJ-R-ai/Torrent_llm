@@ -3,7 +3,7 @@ plausible logits from a model that skipped layers."""
 
 import pytest
 
-from torrent_llm.shard import ShardSpec, plan_even, plan_explicit, validate_plan
+from torrent_llm.shard import ShardSpec, plan_even, plan_explicit, plan_weighted, validate_plan
 
 
 def test_even_split_divides_cleanly():
@@ -88,3 +88,96 @@ def test_validate_rejects_a_chain_that_does_not_reach_the_last_layer():
     specs = [ShardSpec(index=0, start=0, end=30, num_layers=32)]
     with pytest.raises(ValueError, match="ends at layer 30"):
         validate_plan(specs)
+
+
+# --- weighted split (issue #17) ---
+
+
+def test_equal_weights_matches_the_even_split():
+    weighted = plan_weighted(32, [1.0, 1.0])
+    even = plan_even(32, 2)
+
+    assert [(s.start, s.end) for s in weighted] == [(s.start, s.end) for s in even]
+
+
+def test_weights_are_relative_not_absolute():
+    small_numbers = plan_weighted(30, [1.0, 2.0])
+    large_numbers = plan_weighted(30, [10.0, 20.0])
+
+    assert [(s.start, s.end) for s in small_numbers] == [(s.start, s.end) for s in large_numbers]
+
+
+def test_heavier_weight_gets_proportionally_more_layers():
+    specs = plan_weighted(30, [1.0, 2.0])  # a 2x-as-capable second node
+
+    a, b = specs
+    assert a.depth == 10
+    assert b.depth == 20
+    validate_plan(specs)
+
+
+def test_three_way_weighted_split_covers_everything():
+    specs = plan_weighted(28, [1.0, 2.0, 1.0])
+
+    assert sum(s.depth for s in specs) == 28
+    validate_plan(specs)
+    # The 2x node should end up with noticeably more than either 1x node.
+    assert specs[1].depth > specs[0].depth
+    assert specs[1].depth > specs[2].depth
+
+
+def test_every_shard_gets_at_least_one_layer_even_with_a_very_skewed_weight():
+    # weights [100, 1, 1] would floor to [4, 0, 0] under naive proportional
+    # rounding on 5 layers -- exactly the case a mandatory minimum exists for.
+    specs = plan_weighted(5, [100.0, 1.0, 1.0])
+
+    assert all(s.depth >= 1 for s in specs)
+    validate_plan(specs)
+    # The dominant weight still gets the lion's share of what's left.
+    assert specs[0].depth > specs[1].depth
+    assert specs[0].depth > specs[2].depth
+
+
+def test_weighted_split_always_sums_to_num_layers_even_with_awkward_ratios():
+    # Ratios chosen to produce ugly fractional shares, so the largest-remainder
+    # rounding actually gets exercised rather than landing on whole numbers.
+    for num_layers, weights in [
+        (17, [1.0, 1.0, 1.0]),
+        (37, [3.0, 5.0, 7.0]),
+        (100, [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+        (11, [0.3, 0.7]),
+    ]:
+        specs = plan_weighted(num_layers, weights)
+        assert sum(s.depth for s in specs) == num_layers
+        validate_plan(specs)
+
+
+def test_weighted_split_is_deterministic():
+    a = plan_weighted(50, [1.0, 3.0, 2.0])
+    b = plan_weighted(50, [1.0, 3.0, 2.0])
+
+    assert [(s.start, s.end) for s in a] == [(s.start, s.end) for s in b]
+
+
+def test_single_weighted_shard_owns_the_whole_model():
+    (only,) = plan_weighted(10, [1.0])
+
+    assert only.is_first and only.is_last
+    assert only.depth == 10
+
+
+def test_more_weighted_shards_than_layers_is_rejected():
+    with pytest.raises(ValueError, match="every shard must own at least one layer"):
+        plan_weighted(3, [1.0, 1.0, 1.0, 1.0])
+
+
+def test_nonpositive_weights_are_rejected():
+    with pytest.raises(ValueError, match="must be positive"):
+        plan_weighted(10, [1.0, 0.0])
+    with pytest.raises(ValueError, match="must be positive"):
+        plan_weighted(10, [1.0, -2.0])
+
+
+def test_empty_weights_is_rejected():
+    with pytest.raises(ValueError, match="at least one weight"):
+        plan_weighted(10, [])

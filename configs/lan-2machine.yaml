@@ -6,6 +6,18 @@
 #
 # Note num_layers must match the model. Read it without downloading weights:
 #   python -c "from torrent_llm.shard import num_layers_of; print(num_layers_of('Qwen/Qwen3-1.7B'))"
+#
+# If the two machines are not equally capable (issue #17), give each a
+# relative weight instead of relying on the even split below -- an even split
+# sizes every shard's compute and memory for the *weaker* box, wasting
+# whatever headroom the stronger one has. Weights are relative, not absolute:
+# [1.0, 2.5] means "the second node is roughly 2.5x this one", however that
+# ratio was arrived at (VRAM, a FLOPs benchmark, or a guess to refine later).
+#
+#   weights: [1.0, 2.5]
+#
+# Leave this commented out to keep the even split (the right default when both
+# boxes are genuinely comparable, or when there's no capability numbers yet).
 
 model_id: Qwen/Qwen3-1.7B
 num_layers: 28
