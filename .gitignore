@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments — venvs live outside the repo, see docs/setup.md
+.venv/
+venv/
+
+# Generated gRPC stubs (built from proto at install time)
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
+
+# Experiment output
+runs/
+*.jsonl
+wandb/
+
+# Model weights — never commit, pulled from HF cache
+models/
+*.safetensors
+*.bin

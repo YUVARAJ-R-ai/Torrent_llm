@@ -1,0 +1,52 @@
+[project]
+name = "torrent-llm"
+version = "0.1.0"
+description = "Distributed recursive multi-agent LLM inference with learned low-rank activation compression"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Yuvaraj R." },
+    { name = "Haise" },
+]
+
+# Deliberately minimal. We are NOT depending on petals: its last release
+# (2.2.0.post1, Nov 2023) pins transformers<4.35, which predates Llama-3
+# support entirely. See docs/adr/001-minimal-harness.md.
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.44",
+    "accelerate>=0.34",
+    "safetensors>=0.4",
+    "grpcio>=1.66",
+    "protobuf>=5.27",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "grpcio-tools>=1.66",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+torrent-shard = "torrent_llm.cli:shard_main"
+torrent-run = "torrent_llm.cli:run_main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/torrent_llm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
