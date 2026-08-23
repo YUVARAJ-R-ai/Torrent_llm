@@ -33,6 +33,11 @@ from torrent_llm.runner import ChainRunner, TopologyConfig
 from torrent_llm.shard import load_shard, num_layers_of
 from torrent_llm.transport import serve
 
+#: Upper bound on synthetic profiling token ids. Far below any real
+#: tokenizer's vocabulary, so a small-vocab model does not index past its
+#: embedding table and fail with a bare "index out of range in self".
+PROFILE_TOKEN_CEILING = 100
+
 
 def build_local_chain(model_id: str, num_shards: int, dtype: str, device: str):
     """Start ``num_shards`` servers in this process and return a topology for them."""
@@ -150,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         with HopProfiler(path=args.out, metadata=metadata) as profiler:
             with ChainRunner(config, profiler=profiler) as runner:
                 for seq_len in seq_lens:
-                    ids = torch.randint(0, 1000, (1, seq_len))
+                    ids = torch.randint(0, PROFILE_TOKEN_CEILING, (1, seq_len))
                     for _ in range(args.repeats):
                         # Ask the tail shard for one position of logits. The
                         # full seq x vocab tensor is not what we are profiling
@@ -171,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"after seq_len={seq_lens[-1]} context",
                         file=sys.stderr,
                     )
-                    decode_prompt = torch.randint(0, 1000, (1, seq_lens[-1]))
+                    decode_prompt = torch.randint(0, PROFILE_TOKEN_CEILING, (1, seq_lens[-1]))
                     runner.generate(decode_prompt, max_new_tokens=args.decode_tokens + 1)
             records = profiler.records
     finally:
