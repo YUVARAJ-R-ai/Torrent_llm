@@ -16,7 +16,7 @@ single source of truth, and a checked-in `_pb2.py` is something people edit by
 accident:
 
 ```bash
-python -m torrent_llm.transport.codegen
+python -m torrent_llm.codegen
 ```
 
 Verify:
