@@ -1,0 +1,21 @@
+# Two-machine LAN rig (issue #3).
+#
+# Replace the addresses with the two machines' LAN IPs. The head node binds
+# 0.0.0.0 in practice via --host on the server; the addresses here are what the
+# runner dials, so they must be reachable from wherever torrent-run executes.
+#
+# Note num_layers must match the model. Read it without downloading weights:
+#   python -c "from torrent_llm.shard import num_layers_of; print(num_layers_of('Qwen/Qwen3-1.7B'))"
+
+model_id: Qwen/Qwen3-1.7B
+num_layers: 28
+dtype: bfloat16
+
+codec:
+  name: raw
+
+nodes:
+  - address: 192.168.1.10:50051
+    device: cuda
+  - address: 192.168.1.11:50051
+    device: cuda

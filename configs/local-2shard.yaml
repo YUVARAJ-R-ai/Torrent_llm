@@ -1,0 +1,22 @@
+# Single-machine two-process rig: two shards, two ports, one box.
+#
+# The point of this config is that it is byte-identical to the LAN config in
+# everything except the addresses -- moving to two machines changes those three
+# lines and nothing else.
+#
+#   torrent-shard --config configs/local-2shard.yaml --index 0
+#   torrent-shard --config configs/local-2shard.yaml --index 1
+#   torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France is"
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+codec:
+  name: raw
+
+nodes:
+  - address: 127.0.0.1:50051
+    device: cpu
+  - address: 127.0.0.1:50052
+    device: cpu
