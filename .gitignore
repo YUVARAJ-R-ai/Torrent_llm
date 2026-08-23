@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments — venvs live outside the repo, see docs/setup.md
+.venv/
+venv/
+
+# Generated gRPC stubs (built from proto at install time)
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
+
+# Experiment output. Bulk runs stay out of git, but a result a doc actually
+# cites is committed with `git add -f` so the claim has its data next to it.
+runs/
+*.jsonl
+wandb/
+
+# Model weights — never commit, pulled from HF cache
+models/
+*.safetensors
+*.bin

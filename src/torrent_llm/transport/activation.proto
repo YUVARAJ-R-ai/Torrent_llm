@@ -1,0 +1,84 @@
+// Wire format for one activation hop.
+//
+// Deliberately dumb: the payload is opaque bytes and the server never inspects
+// it. Everything about how those bytes were produced lives in the header, so a
+// new codec (issue #8) needs no proto change and no server change.
+
+syntax = "proto3";
+
+package torrent_llm;
+
+// How to interpret a payload.
+message Header {
+  string request_id = 1;   // correlates every hop of one inference request
+  int32 hop = 2;           // 0-based position in the shard chain
+  string codec = 3;        // registry name of the codec that produced the payload
+  string dtype = 4;        // logical dtype, e.g. "bfloat16"
+  repeated int64 shape = 5;  // logical shape after decoding
+  string codec_meta = 6;   // codec-private JSON (rank, scales, payload shape, ...)
+}
+
+// What a payload represents. The first shard is fed token ids; every later
+// shard is fed activations. Both travel through the same codec path so there is
+// only one serialisation code path to instrument.
+enum PayloadKind {
+  PAYLOAD_KIND_UNSPECIFIED = 0;
+  PAYLOAD_KIND_TOKEN_IDS = 1;
+  PAYLOAD_KIND_ACTIVATION = 2;
+}
+
+message ForwardRequest {
+  Header header = 1;
+  bytes payload = 2;
+  PayloadKind kind = 3;
+  // Absolute positions, shared by every shard so rotary embeddings line up
+  // across the chain. Empty means "0..seq_len-1".
+  repeated int64 position_ids = 4;
+  // Client's monotonic-clock send time in nanoseconds. Used only for one-way
+  // latency accounting in the profiler; clocks are not assumed synchronised.
+  int64 sent_unix_ns = 5;
+  // How many trailing positions of logits the final shard should return.
+  // 0 means every position.
+  //
+  // This matters far more than it looks. Logits are batch x seq x vocab_size,
+  // and vocab dwarfs hidden_size on modern tokenizers -- 151936 vs 1024 on
+  // Qwen3-0.6B. A full-sequence logits reply at 1k context is ~594 MiB, about
+  // 148x the hidden-state activation on the same hop. Generation needs one
+  // position; only perplexity needs them all.
+  int32 logits_keep_last = 6;
+}
+
+message ForwardReply {
+  Header header = 1;
+  bytes payload = 2;
+  PayloadKind kind = 3;
+  // Wall-time the shard spent inside the forward pass, excluding transport.
+  // Lets the profiler separate compute cost from network cost, which is the
+  // distinction the whole bandwidth argument rests on.
+  int64 compute_ns = 4;
+  // True when this shard owned the LM head, so the payload is logits.
+  bool is_final = 5;
+}
+
+message InfoRequest {}
+
+message InfoReply {
+  int32 shard_index = 1;
+  int32 layer_start = 2;
+  int32 layer_end = 3;
+  int32 num_layers = 4;
+  int32 hidden_size = 5;
+  string model_id = 6;
+  string dtype = 7;
+  string device = 8;
+  bool is_first = 9;
+  bool is_last = 10;
+}
+
+service ShardService {
+  // Run this shard's layers on one activation and return the result.
+  rpc Forward(ForwardRequest) returns (ForwardReply);
+  // Describe what this node hosts. The static stand-in for the DHT layer
+  // registry (issue #15).
+  rpc Info(InfoRequest) returns (InfoReply);
+}
