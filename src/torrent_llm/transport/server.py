@@ -21,8 +21,8 @@ from torrent_llm.shard import ShardRuntime
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
-    CHANNEL_OPTIONS,
     MAX_MESSAGE_BYTES,
+    SERVER_OPTIONS,
     header_to_proto,
     message_from_proto,
 )
@@ -193,7 +193,7 @@ def serve(
         The started server and the port it actually bound.
     """
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=max_workers), options=CHANNEL_OPTIONS
+        futures.ThreadPoolExecutor(max_workers=max_workers), options=SERVER_OPTIONS
     )
     pb_grpc.add_ShardServiceServicer_to_server(
         ShardService(runtime, codec, model_id=model_id), server

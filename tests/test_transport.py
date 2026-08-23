@@ -420,3 +420,42 @@ def test_uncached_requests_report_no_cache_length(chain, input_ids):
     result = chain[0].forward(input_ids, hop=0, is_token_ids=True, request_id="nocache")
 
     assert result.cache_length == 0
+
+
+def test_binding_a_port_that_is_already_serving_fails_loudly():
+    """A stale shard process must be a startup error, not a silent oddity.
+
+    gRPC enables SO_REUSEPORT by default, which makes a duplicate bind ambiguous:
+    it logs a failure and still returns a port. On a rig where shards get
+    restarted by hand between experiments, that turns "did the old process
+    actually die?" into something you diagnose from confusing results rather
+    than from a crash at startup.
+    """
+    import grpc
+    from transformers import AutoModelForCausalLM, LlamaConfig
+
+    from torrent_llm.codec import get_codec
+    from torrent_llm.shard import ShardRuntime, plan_even
+    from torrent_llm.transport import serve
+
+    def make_shard():
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(
+            LlamaConfig(
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                vocab_size=64,
+                max_position_embeddings=32,
+            )
+        ).eval()
+        return ShardRuntime(model, plan_even(2, 1)[0])
+
+    first, port = serve(make_shard(), get_codec("raw"), host="127.0.0.1")
+    try:
+        with pytest.raises((RuntimeError, grpc.RpcError)):
+            serve(make_shard(), get_codec("raw"), host="127.0.0.1", port=port)
+    finally:
+        first.stop(grace=None)
