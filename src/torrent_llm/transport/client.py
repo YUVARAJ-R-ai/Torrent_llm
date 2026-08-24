@@ -45,6 +45,10 @@ class HopResult:
     #: Time the peer spent in the forward pass, as reported by the peer.
     compute_ns: int
     codec: str
+    #: Positions the peer's cache holds after this call; 0 when uncached.
+    #: Lets a caller notice session drift on the reply it already has rather
+    #: than only on the next request it sends.
+    cache_length: int = 0
 
     @property
     def transport_ns(self) -> int:
@@ -87,6 +91,9 @@ class ShardClient:
         is_token_ids: bool = False,
         position_ids: torch.Tensor | None = None,
         logits_keep_last: int = 0,
+        use_cache: bool = False,
+        end_of_request: bool = False,
+        expected_cache_position: int | None = None,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -96,6 +103,26 @@ class ShardClient:
                 Generation only needs ``1``, and the difference is large --
                 logits are seq x vocab, so a full-sequence reply can be two
                 orders of magnitude bigger than the activation on the same hop.
+            use_cache: Opt in to a server-side KV cache scoped to this
+                ``request_id`` (issue #24). Once a session exists, ``tensor``
+                only needs to carry the *new* positions -- not the whole
+                sequence -- because the shard remembers everything sent under
+                this ``request_id`` so far. Must stay ``True`` across every call
+                of one generation: turning it off partway through starts a cold
+                recompute instead of continuing the cached one, silently, since
+                there is nothing in the wire protocol that would flag the switch
+                as a mistake.
+            end_of_request: Set on the final call of a generation so the shard
+                drops its cached state immediately rather than waiting for the
+                server's idle-session sweep. Meaningless, and ignored, when
+                ``use_cache`` is ``False``.
+            expected_cache_position: How many positions the caller believes the
+                shard's cache already holds (issue #28). When given, the shard
+                refuses the request with ``FAILED_PRECONDITION`` if its cache
+                disagrees, instead of computing from a wrong offset and
+                returning quietly wrong output. ``None`` skips the check, which
+                is only appropriate when the caller genuinely does not track
+                position -- passing it is strongly preferred.
         """
         request_id = request_id or uuid.uuid4().hex
         message = self.codec.encode(tensor, request_id=request_id, hop=hop)
@@ -107,6 +134,9 @@ class ShardClient:
             position_ids=(position_ids.flatten().tolist() if position_ids is not None else []),
             sent_unix_ns=time.time_ns(),
             logits_keep_last=logits_keep_last,
+            use_cache=use_cache,
+            end_of_request=end_of_request,
+            expected_cache_position=expected_cache_position,
         )
 
         started = time.perf_counter_ns()
@@ -125,6 +155,7 @@ class ShardClient:
             wall_ns=wall_ns,
             compute_ns=reply.compute_ns,
             codec=message.header.codec,
+            cache_length=reply.cache_length,
         )
 
     def close(self) -> None:

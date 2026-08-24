@@ -68,13 +68,17 @@ reviewer:
    `decode`, and `bandwidth_verdict()` refuses to collapse a mixed run into one
    figure.
 
-## Caveat on the current code
+## Decode was analytic when this page was written — it no longer has to be
 
-`ChainRunner.generate` has no KV cache, so every decode step re-sends the whole
-prefix. Its per-step payloads are therefore repeated *prefills*, and the decode
-row of the table above is **not** what the current code would measure. Prefill
-measurements are unaffected and valid today. A KV cache is a prerequisite for any
-decode-regime measurement, and until it exists the decode column stays analytic.
+The paragraph that used to sit here said `ChainRunner.generate` had no KV
+cache, so every decode step re-sent the whole prefix, and the decode row above
+was therefore not something the code could actually measure.
+
+Issue #24 closed that gap: every shard now keeps a server-side KV cache for a
+generation's `request_id`, and `generate()` sends the full prompt once and a
+single new token on every step after that. The decode numbers below are the
+first ones on this page that are measured rather than computed from the
+formula in the first section.
 
 ## Measured, not just computed
 
@@ -115,6 +119,56 @@ _Caveat: profiling on CPU instead produces ~15 s of prefill compute, which makes
 every hop look compute-bound. That is an artefact of the device, not a result.
 `scripts/profile_chain.py` warns when it happens and takes `--project-compute-ms`
 to override._
+
+## Decode, measured for real
+
+Same rig, immediately after a 2048-token prefill: 10 cached decode steps, KV
+cache carried per shard across gRPC calls (issue #24).
+(`runs/profile-qwen3-0.6b-cuda-cached.jsonl`)
+
+| | prefill (2k context) | cached decode (1 token) |
+|---|---:|---:|
+| payload on hop 1 | 4096 KiB | **2 KiB** |
+| shard compute (hop 1) | ~102 ms | ~6.9 ms |
+| transport share (loopback) | ~10% | ~16% |
+
+The payload column is the point: hop 1 sends exactly `1 × 1024 × 2 bytes = 2048
+bytes` per decode step — one position, not the 4 MiB prefill it would have sent
+by re-running the whole prefix, which is what the code did before issue #24.
+That is a **2048× reduction** in what crosses the wire per step, purely from
+not recomputing what was already computed.
+
+Loopback transport share is *higher* for decode (16% vs 10%) even though the
+payload is tiny — because the payload is tiny. Fixed per-call overhead
+(serialisation, gRPC framing, one round trip) does not shrink with the payload,
+so it becomes a larger fraction of a smaller total. This is the mechanism, made
+concrete, behind the next paragraph.
+
+Projecting the measured ~6.9 ms decode compute onto 100 Mbps at 30 ms RTT,
+across model sizes:
+
+| Model | Payload/step | Wire time | Wire share |
+|---|---:|---:|---:|
+| Qwen3-0.6B | 2 KiB | 0.16 ms | 0.4% |
+| Qwen3-1.7B | 4 KiB | 0.33 ms | 0.9% |
+| Qwen3-8B / Llama-3-8B | 8 KiB | 0.66 ms | 1.7% |
+| Llama-3-70B | 16 KiB | 1.31 ms | 3.4% |
+
+Even at 70B, wire time is under 4% of the hop. Round-trip latency (30 ms) alone
+dwarfs it. This is the measured version of the claim the earlier analytic table
+made with an assumed 50 ms of compute: cached decode is not bandwidth-bound at
+any model size in this table, on any link this project is targeting, and no
+compression ratio changes that — there was never enough wire time in the hop
+for a smaller payload to meaningfully shorten it.
+
+One honest note on precision: shard compute for the *same* 2048-token prefill
+measured ~102 ms in this run and ~211 ms in the run recorded earlier on this
+page. Same model, same hardware, different run — GPU clocks, thermal state and
+whatever else was running on the box are not held constant between sessions.
+Treat the compute figures here as indicative of the regime (decode is fast,
+prefill is not, by roughly two orders of magnitude), not as calibrated physical
+constants. The payload sizes are exact regardless — they follow from the model's
+architecture, not from anything timed.
 
 ## A payload nobody had counted
 

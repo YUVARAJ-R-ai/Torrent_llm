@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
+from transformers.cache_utils import Cache
 from transformers.masking_utils import create_causal_mask
 
 from torrent_llm.shard.plan import ShardSpec
@@ -117,6 +118,7 @@ class ShardRuntime:
         hidden_states: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
+        cache: Cache | None = None,
     ) -> ShardOutput:
         """Run this shard's layers.
 
@@ -124,10 +126,33 @@ class ShardRuntime:
             input_ids: Token ids. Required on the first shard, rejected elsewhere.
             hidden_states: Activations from the previous hop. Required on every
                 shard but the first.
-            position_ids: Absolute positions. Defaults to ``0..seq_len-1``. Every
-                shard must be given the *same* positions for rotary embeddings to
-                line up across the chain.
+            position_ids: Absolute positions. Defaults to ``0..seq_len-1`` when
+                ``cache`` is ``None``, or to the positions immediately following
+                whatever the cache already holds when it is given. Every shard
+                must be given the *same* positions for rotary embeddings to line
+                up across the chain.
             attention_mask: Optional padding mask, ``(batch, seq)``.
+            cache: A per-request KV cache *scoped to this shard*, or ``None`` to
+                recompute from scratch every call (the original, still-default
+                behaviour). Passing a cache turns this into an incremental decode
+                step: only the new positions in ``input_ids``/``hidden_states``
+                need to be supplied, not the whole growing sequence, because the
+                layers attend over cache-plus-new rather than recomputing
+                attention over everything seen so far.
+
+                The cache is mutated in place by each layer's own attention
+                module (that is how :class:`~transformers.cache_utils.Cache`
+                works) and must be reused across calls for the same request by
+                the caller -- this method never creates or discards one itself.
+
+                Layer indices baked into this shard's modules are *global*
+                (layer 14 of a 28-layer model keeps ``layer_idx == 14`` even
+                after slicing), so a cache built for one shard is never valid
+                for another: each shard's cache only ever has entries at the
+                indices that shard owns, and this method queries the cache using
+                ``self.spec.start`` rather than the library's default of layer 0,
+                which would silently read as "empty" for every shard but the
+                first.
 
         Returns:
             Hidden states, or logits if this is the last shard.
@@ -136,7 +161,8 @@ class ShardRuntime:
         h = h.to(self.device, self.dtype)
 
         if position_ids is None:
-            position_ids = torch.arange(h.shape[1], device=self.device).unsqueeze(0)
+            start = cache.get_seq_length(layer_idx=self.spec.start) if cache is not None else 0
+            position_ids = torch.arange(start, start + h.shape[1], device=self.device).unsqueeze(0)
         position_ids = position_ids.to(self.device)
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
@@ -146,8 +172,14 @@ class ShardRuntime:
             config=self.config,
             inputs_embeds=h,
             attention_mask=attention_mask,
-            past_key_values=None,
+            past_key_values=cache,
             position_ids=position_ids,
+            # Without this, the mask builder sizes itself against "the first
+            # full_attention layer" in the cache, which for any shard but the
+            # first is a layer index this shard's cache has never written to --
+            # it would read as zero past length and produce a mask sized for a
+            # cold cache even mid-generation.
+            layer_idx=self.spec.start,
         )
 
         for layer in self.layers:
@@ -156,6 +188,8 @@ class ShardRuntime:
                 attention_mask=causal_mask,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
+                past_key_values=cache,
+                use_cache=cache is not None,
             )
 
         if not self.spec.is_last:

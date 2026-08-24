@@ -66,6 +66,10 @@ class ChainRunner:
         position_ids: torch.Tensor | None = None,
         phase: str = "prefill",
         logits_keep_last: int = 0,
+        request_id: str | None = None,
+        use_cache: bool = False,
+        end_of_request: bool = False,
+        expected_cache_position: int | None = None,
     ) -> ChainResult:
         """One full forward pass over the chain.
 
@@ -77,8 +81,29 @@ class ChainRunner:
                 all. Greedy decoding needs only ``1``, and asking for all of
                 them puts a batch x seq x vocab tensor on the wire, which on a
                 modern tokenizer is far larger than any activation in the chain.
+            request_id: Correlates this call with earlier ones under the same
+                KV cache session (issue #24). Only meaningful together with
+                ``use_cache=True``; a fresh id is generated when omitted, which
+                is correct for a one-off, uncached call.
+            use_cache: Reuse (or start, on the first call for this
+                ``request_id``) a server-side KV cache on every shard, so
+                ``input_ids``/``hidden_states`` only need to carry the new
+                positions rather than the whole sequence. See
+                :meth:`generate` for the loop that actually exploits this —
+                calling ``forward`` directly with caching on is mostly useful
+                for building a custom decode loop.
+            end_of_request: Tell every shard this is the last call for
+                ``request_id``, so each frees its cached state immediately. See
+                the ``end_of_request`` field in ``activation.proto`` for why
+                this exists alongside a TTL-based backstop rather than instead
+                of one.
+            expected_cache_position: How many positions each shard's cache
+                should already hold (issue #28). Every shard in the chain sees
+                the same value, because they advance in lockstep -- shard 3
+                having processed a different number of positions than shard 0
+                is itself the bug this catches.
         """
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         hops: list[HopResult] = []
 
         sent = input_ids
@@ -88,6 +113,9 @@ class ChainRunner:
             hop=0,
             is_token_ids=True,
             position_ids=position_ids,
+            use_cache=use_cache,
+            end_of_request=end_of_request,
+            expected_cache_position=expected_cache_position,
         )
         hops.append(result)
         self._profile(result, request_id, 0, sent, phase)
@@ -100,6 +128,9 @@ class ChainRunner:
                 hop=hop,
                 position_ids=position_ids,
                 logits_keep_last=logits_keep_last,
+                use_cache=use_cache,
+                end_of_request=end_of_request,
+                expected_cache_position=expected_cache_position,
             )
             hops.append(result)
             self._profile(result, request_id, hop, sent, phase)
@@ -131,28 +162,60 @@ class ChainRunner:
         )
 
     def generate(
-        self, input_ids: torch.Tensor, *, max_new_tokens: int = 16
+        self, input_ids: torch.Tensor, *, max_new_tokens: int = 16, use_cache: bool = True
     ) -> tuple[torch.Tensor, list[ChainResult]]:
         """Greedy decode.
 
-        There is no KV cache yet, so every step re-runs the entire prefix through
-        every shard. That is correct but quadratic, and it means per-step wire
-        payloads look like prefill payloads rather than the ~8 KB a cached decode
-        step would send. **Decode-time bandwidth numbers from this method are not
-        meaningful** — they measure repeated prefill. Prefill measurements are
-        unaffected. Adding the cache is tracked as its own follow-up.
+        With ``use_cache=True`` (the default, issue #24), every shard keeps a
+        KV cache for this generation's ``request_id``: the first step sends the
+        whole prompt, and every step after that sends only the single newly
+        generated token. Per-step wire payloads are therefore real cached-decode
+        payloads — a few KiB, not a repeated prefill — which is what makes
+        decode-regime bandwidth something this project can actually measure
+        instead of only projecting analytically (see docs/bandwidth-regimes.md).
+
+        ``use_cache=False`` keeps the original behaviour: every step re-runs the
+        whole growing prefix through every shard with no server-side state at
+        all. Slower and far more bandwidth, but it is still there as an explicit
+        control — the cleanest way to *measure* the cache's payoff is to run
+        both and diff the profiler output, not to trust that caching helped.
+
+        Cleanup on the happy path is automatic: the last step is sent with
+        ``end_of_request=True``, so every shard drops its cache for this request
+        as soon as generation finishes. If this method raises partway through
+        (a shard error, a dropped connection), that signal never goes out and
+        the abandoned sessions are freed later by each shard's own TTL sweep
+        rather than by anything this method does — see ``SessionStore`` for why
+        a best-effort signal plus a backstop beats trying to guarantee cleanup
+        from the calling side, which a network partition can defeat anyway.
         """
+        request_id = uuid.uuid4().hex
         ids = input_ids
+        # What gets sent *this* step: the whole prompt once, then one token at a
+        # time once the cache is carrying the rest of the context.
+        sent = input_ids
+        # How many positions every shard's cache should already hold before this
+        # step. Starts at 0 (nothing cached yet) and advances by whatever was
+        # sent. Checking it is what turns a lost session into an error instead
+        # of silently wrong output -- see issue #28.
+        cache_position = 0
         passes: list[ChainResult] = []
         for step in range(max_new_tokens):
-            # Greedy decoding reads one position, so requesting the whole
-            # logits tensor would dominate the chain's bandwidth for nothing.
+            is_last_step = step == max_new_tokens - 1
             result = self.forward(
-                ids, phase="prefill" if step == 0 else "decode", logits_keep_last=1
+                sent,
+                phase="prefill" if step == 0 else "decode",
+                logits_keep_last=1,
+                request_id=request_id,
+                use_cache=use_cache,
+                end_of_request=use_cache and is_last_step,
+                expected_cache_position=cache_position if use_cache else None,
             )
             passes.append(result)
-            next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            ids = torch.cat([ids, next_token.to(ids.device)], dim=1)
+            cache_position += sent.shape[1]
+            next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(ids.device)
+            ids = torch.cat([ids, next_token], dim=1)
+            sent = next_token if use_cache else ids
         return ids, passes
 
     def describe(self) -> list[dict[str, object]]:

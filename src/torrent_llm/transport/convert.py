@@ -22,6 +22,21 @@ CHANNEL_OPTIONS = [
     ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
 ]
 
+SERVER_OPTIONS = [
+    *CHANNEL_OPTIONS,
+    # gRPC enables SO_REUSEPORT by default, which makes starting a second shard
+    # on a port that is already serving ambiguous rather than an error: the bind
+    # logs a failure and still hands back a port. On a rig where shards are
+    # restarted by hand between experiments, that turns "did the old process
+    # actually die?" into a question you have to answer by reading `ss` output,
+    # after the results already look wrong.
+    #
+    # Off, a duplicate bind raises immediately and names the port. A stale
+    # process should be a loud startup failure, not something inferred later
+    # from confusing numbers.
+    ("grpc.so_reuseport", 0),
+]
+
 
 def header_to_proto(header: ActivationHeader) -> pb.Header:
     """Dataclass header -> protobuf header."""

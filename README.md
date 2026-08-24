@@ -62,14 +62,17 @@ torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France
 | gRPC activation transport (#5) | built — 512 MiB message cap, per-hop compute/transport split reported |
 | Per-hop bandwidth profiler (#6) | built — JSONL records, hop summaries, projection to unrun model sizes |
 | Codec seam | built — `RawCodec` is the uncompressed control; the learned compressor drops in behind the same interface |
+| KV cache (#24) | built — cached decode sends one position per step, not a repeated prefill |
+| Heterogeneous routing weights (#17) | built — layers split proportionally to relative node capability |
+| HTTP layer (#26) | built — `torrent-api`, drives and instruments the chain over HTTP |
+| Dashboard (#27) | built — browser view of a run; a testing tool, not the final interface |
 | Learned low-rank compressor (#8) | not started — the contribution |
-| KV cache | not started — required before any decode-regime measurement |
 
 See [docs/setup.md](docs/setup.md) to install and run, and
 [docs/adr/001-minimal-harness.md](docs/adr/001-minimal-harness.md) for why this is
 a purpose-built harness rather than a Petals fork.
 
-### One finding that reshapes the claim
+### Two findings that reshape the claim
 
 [docs/bandwidth-regimes.md](docs/bandwidth-regimes.md) — the "50–200 MB per forward
 pass" figure describes **prefill**. A *cached decode* hop ships one position: 16 KiB
@@ -78,6 +81,14 @@ buys 6.6× on a 70B prefill hop and **loses 5%** on a cached decode hop, because
 there was never any wire time to save. The claim to defend is therefore scoped to
 prefill and to inter-agent latent messages — which is the multi-agent case anyway,
 since every Planner→Critic→Solver handoff is a fresh sequence rather than a token.
+Now measured rather than projected, since #24 landed.
+
+**The chain's largest payload was never an activation.** The final shard returns
+logits, which are `batch × seq × vocab_size` — and vocab dwarfs hidden_size on a
+modern tokenizer (151936 vs 1024 on Qwen3-0.6B). A full-sequence logits reply at
+1k context is 594 MiB, about **148× the hidden-state activation on the same hop**,
+and it blew the transport cap on the first real profiling run. Anything returning
+a vocab-shaped tensor over the network needs the same treatment.
 
 Work is tracked on the **[GitHub Project board](https://github.com/users/YUVARAJ-R-ai/projects/5)** across 4 one-week sprints that map to the research phases:
 

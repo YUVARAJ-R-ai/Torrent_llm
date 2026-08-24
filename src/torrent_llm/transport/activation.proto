@@ -46,6 +46,37 @@ message ForwardRequest {
   // 148x the hidden-state activation on the same hop. Generation needs one
   // position; only perplexity needs them all.
   int32 logits_keep_last = 6;
+
+  // Opt in to a server-side KV cache for this request_id (issue #24). When
+  // true, the shard reuses (or creates, on the first call) a cache keyed by
+  // request_id, and the caller only needs to send the *new* positions from the
+  // second call onward -- not the whole growing sequence. gRPC calls are
+  // otherwise stateless, so this cache genuinely lives on the server between
+  // calls; it is not something the client holds or ships.
+  bool use_cache = 7;
+
+  // Tells the shard this is the last call for this request_id, so it should
+  // drop the cached state immediately after replying rather than waiting for
+  // the server's TTL sweep to notice it went idle. Best-effort: a client that
+  // crashes or disconnects mid-generation never gets to send this, which is
+  // exactly why the TTL sweep exists as the backstop rather than the only
+  // mechanism -- an explicit signal keeps the *common* case (generation runs
+  // to completion) from leaving cache memory parked until the sweep gets to it.
+  bool end_of_request = 8;
+
+  // How many positions the client believes this shard's cache already holds
+  // (issue #28). Explicitly optional: presence, not the value, is what tells
+  // the shard whether to check at all, since 0 is a legitimate value meaning
+  // "this is the prefill".
+  //
+  // Without this a lost session is silently wrong rather than an error. A shard
+  // that restarted, or swept the session on TTL, or never had it because the
+  // request went to a different replica, will happily build a fresh empty cache,
+  // read position_ids as [0] from it, and run a mid-generation token as if it
+  // were the first of a new sequence. Generation continues and the output is
+  // quietly incorrect -- the worst possible shape for a failure in a swarm where
+  // nodes leaving mid-request is the normal case rather than an edge case.
+  optional int32 expected_cache_position = 9;
 }
 
 message ForwardReply {
@@ -58,6 +89,10 @@ message ForwardReply {
   int64 compute_ns = 4;
   // True when this shard owned the LM head, so the payload is logits.
   bool is_final = 5;
+  // Positions this shard's cache holds after serving the request, or 0 when the
+  // request did not use a cache. Lets a client notice drift on the reply it
+  // already has, rather than only on the next request it sends.
+  int32 cache_length = 6;
 }
 
 message InfoRequest {}

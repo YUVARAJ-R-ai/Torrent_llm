@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from torrent_llm.shard import ShardSpec, plan_even, plan_explicit, validate_plan
+from torrent_llm.shard import ShardSpec, plan_even, plan_explicit, plan_weighted, validate_plan
 
 
 @dataclass(frozen=True)
@@ -44,15 +44,30 @@ class TopologyConfig:
     codec: str = "raw"
     codec_args: dict[str, Any] = field(default_factory=dict)
     boundaries: list[int] | None = None
+    #: Relative per-node capability for a proportional split (issue #17), e.g.
+    #: ``[1.0, 2.5]`` to give a second node roughly 2.5x the layers of the
+    #: first. Mutually exclusive with ``boundaries`` -- both being ways to
+    #: override the even split, picking between them silently would hide a
+    #: config mistake rather than catch one.
+    weights: list[float] | None = None
     trust_remote_code: bool = False
+
+    def __post_init__(self) -> None:
+        if self.boundaries and self.weights:
+            raise ValueError(
+                "topology sets both 'boundaries' and 'weights'; these are two "
+                "different ways to override the even split and only one may be "
+                "given, or it is ambiguous which one actually decided the plan"
+            )
 
     def shard_plan(self) -> list[ShardSpec]:
         """Layer ranges for this topology, validated for full coverage."""
-        specs = (
-            plan_explicit(self.num_layers, self.boundaries)
-            if self.boundaries
-            else plan_even(self.num_layers, len(self.nodes))
-        )
+        if self.boundaries:
+            specs = plan_explicit(self.num_layers, self.boundaries)
+        elif self.weights:
+            specs = plan_weighted(self.num_layers, self.weights)
+        else:
+            specs = plan_even(self.num_layers, len(self.nodes))
         if len(specs) != len(self.nodes):
             raise ValueError(
                 f"topology has {len(self.nodes)} nodes but the plan produced {len(specs)} shards"
@@ -85,5 +100,6 @@ class TopologyConfig:
             codec=codec,
             codec_args=codec_args,
             boundaries=raw.get("boundaries"),
+            weights=raw.get("weights"),
             trust_remote_code=bool(raw.get("trust_remote_code", False)),
         )

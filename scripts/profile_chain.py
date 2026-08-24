@@ -33,6 +33,11 @@ from torrent_llm.runner import ChainRunner, TopologyConfig
 from torrent_llm.shard import load_shard, num_layers_of
 from torrent_llm.transport import serve
 
+#: Upper bound on synthetic profiling token ids. Far below any real
+#: tokenizer's vocabulary, so a small-vocab model does not index past its
+#: embedding table and fail with a bare "index out of range in self".
+PROFILE_TOKEN_CEILING = 100
+
 
 def build_local_chain(model_id: str, num_shards: int, dtype: str, device: str):
     """Start ``num_shards`` servers in this process and return a topology for them."""
@@ -116,6 +121,16 @@ def main(argv: list[str] | None = None) -> int:
             "that number into the projection makes every hop look compute-bound"
         ),
     )
+    parser.add_argument(
+        "--decode-tokens",
+        type=int,
+        default=0,
+        help=(
+            "also run cached generation (issue #24) for this many new tokens after "
+            "prefilling the largest --seq-lens context, to measure real decode-regime "
+            "payloads instead of only projecting them. 0 (the default) skips this."
+        ),
+    )
     args = parser.parse_args(argv)
 
     seq_lens = [int(s) for s in args.seq_lens.split(",")]
@@ -140,24 +155,47 @@ def main(argv: list[str] | None = None) -> int:
         with HopProfiler(path=args.out, metadata=metadata) as profiler:
             with ChainRunner(config, profiler=profiler) as runner:
                 for seq_len in seq_lens:
-                    ids = torch.randint(0, 1000, (1, seq_len))
+                    ids = torch.randint(0, PROFILE_TOKEN_CEILING, (1, seq_len))
                     for _ in range(args.repeats):
                         # Ask the tail shard for one position of logits. The
                         # full seq x vocab tensor is not what we are profiling
                         # and on a large vocab it dwarfs every activation hop.
                         runner.forward(ids, logits_keep_last=1)
                     print(f"  seq_len={seq_len} done", file=sys.stderr)
+
+                if args.decode_tokens > 0:
+                    # One cached generation, run after the largest prefill
+                    # context, so the decode steps measured here have a
+                    # realistic amount of history behind them rather than
+                    # decoding from an empty prompt. generate() tags its own
+                    # records prefill/decode; only the decode ones are new
+                    # here since the prefill step duplicates what the loop
+                    # above already measured.
+                    print(
+                        f"  running {args.decode_tokens} cached decode steps "
+                        f"after seq_len={seq_lens[-1]} context",
+                        file=sys.stderr,
+                    )
+                    decode_prompt = torch.randint(0, PROFILE_TOKEN_CEILING, (1, seq_lens[-1]))
+                    runner.generate(decode_prompt, max_new_tokens=args.decode_tokens + 1)
             records = profiler.records
     finally:
         for server in servers:
             server.stop(grace=None)
 
     for seq_len in seq_lens:
-        subset = [r for r in records if r.seq_len == seq_len]
+        subset = [r for r in records if r.seq_len == seq_len and r.phase == "prefill"]
         summaries = summarize_by_hop(subset)
-        print(f"\n=== seq_len = {seq_len} ===")
+        print(f"\n=== prefill, seq_len = {seq_len} ===")
         print(format_table(summaries))
         print(f"\nverdict: {bandwidth_verdict(summaries)}")
+
+    if args.decode_tokens > 0:
+        decode_records = [r for r in records if r.phase == "decode"]
+        decode_summaries = summarize_by_hop(decode_records)
+        print(f"\n=== cached decode, after seq_len = {seq_lens[-1]} context ===")
+        print(format_table(decode_summaries))
+        print(f"\nverdict: {bandwidth_verdict(decode_summaries)}")
 
     last = [r for r in records if r.seq_len == seq_lens[-1] and r.hop > 0]
     measured_ms = (sum(r.compute_ns for r in last) / len(last) / 1e6) if last else 0.0
