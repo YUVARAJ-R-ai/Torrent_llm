@@ -23,6 +23,7 @@ class HopSummary:
     mean_compression_ratio: float
     mean_transport_share: float
     mean_effective_mbps: float
+    median_codec_overhead_ms: float = 0.0
 
     def as_row(self) -> dict[str, object]:
         return {
@@ -33,6 +34,7 @@ class HopSummary:
             "wall_ms": round(self.median_wall_ms, 3),
             "compute_ms": round(self.median_compute_ms, 3),
             "transport_ms": round(self.median_transport_ms, 3),
+            "codec_ms": round(self.median_codec_overhead_ms, 3),
             "ratio": round(self.mean_compression_ratio, 2),
             "transport_share": round(self.mean_transport_share, 3),
             "eff_Mbps": round(self.mean_effective_mbps, 1),
@@ -64,6 +66,7 @@ def summarize_by_hop(records: list[HopRecord]) -> list[HopSummary]:
                 mean_compression_ratio=mean(r.compression_ratio for r in rows),
                 mean_transport_share=mean(r.transport_share for r in rows),
                 mean_effective_mbps=mean(r.effective_mbps for r in rows),
+                median_codec_overhead_ms=median(r.codec_overhead_ns / 1e6 for r in rows),
             )
         )
     return summaries

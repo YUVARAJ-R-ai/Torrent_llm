@@ -93,6 +93,42 @@ def test_raw_codec_reports_no_compression(chain, input_ids):
         assert hop.codec == "raw"
 
 
+def test_chain_with_lowrank_codec_reports_bandwidth_reduction(model_factory, num_layers, input_ids):
+    specs = plan_even(num_layers, 2)
+    rank = 16
+    hidden = 64
+    codec_args = {"rank": rank, "seed": 42}
+    servers, clients = [], []
+    for spec in specs:
+        runtime = ShardRuntime(model_factory(), spec)
+        server, port = serve(
+            runtime, get_codec("lowrank", **codec_args), host="127.0.0.1", model_id="tiny"
+        )
+        servers.append(server)
+        clients.append(ShardClient(f"127.0.0.1:{port}", get_codec("lowrank", **codec_args)))
+
+    try:
+        hops = walk(clients, input_ids)
+        # Hop 0 carries token ids (passthrough)
+        assert hops[0].sent_bytes == 12 * 8
+        assert hops[0].codec == "lowrank"
+
+        # Hop 1 carries compressed activation: 12 tokens x rank 16 x fp32 (4 bytes) = 768 bytes
+        # Uncompressed was 12 x 64 x 4 = 3072 bytes (4x reduction!)
+        assert hops[1].sent_bytes == 12 * rank * 4
+        assert hops[1].sent_uncompressed_bytes == 12 * hidden * 4
+        assert hops[1].compression_ratio == pytest.approx(hidden / rank)
+        assert hops[1].codec == "lowrank"
+        assert hops[1].encode_ns > 0
+        assert hops[1].decode_ns > 0
+        assert hops[1].codec_overhead_ns > 0
+    finally:
+        for c in clients:
+            c.close()
+        for s in servers:
+            s.stop(grace=None)
+
+
 def test_hop_separates_remote_compute_from_transport(chain, input_ids):
     hops = walk(chain, input_ids)
 

@@ -38,9 +38,21 @@ class HopRecord:
     # sending side; compute is what the peer reported for its forward pass.
     wall_ns: int
     compute_ns: int
+    encode_ns: int = 0
+    decode_ns: int = 0
 
     phase: str = "prefill"  # prefill | decode
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def codec_overhead_ns(self) -> int:
+        """Time spent in codec encoding and decoding on this hop."""
+        return self.encode_ns + self.decode_ns
+
+    @property
+    def wire_only_ns(self) -> int:
+        """Transport time minus local codec overhead."""
+        return max(0, self.transport_ns - self.codec_overhead_ns)
 
     @property
     def transport_ns(self) -> int:
@@ -82,6 +94,8 @@ class HopRecord:
             compression_ratio=self.compression_ratio,
             bytes_per_token=self.bytes_per_token,
             transport_share=self.transport_share,
+            codec_overhead_ns=self.codec_overhead_ns,
+            wire_only_ns=self.wire_only_ns,
         )
         return json.dumps(payload)
 
