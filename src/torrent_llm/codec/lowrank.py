@@ -211,8 +211,8 @@ class LowRankCodec(Codec):
         meta = message.header.codec_meta
         logical_dtype = getattr(torch, message.header.dtype)
 
-        # Passthrough handling
-        if meta.get("passthrough"):
+        # Passthrough or raw handling
+        if meta.get("passthrough") or message.header.codec == "raw":
             return bytes_to_tensor(message.payload, logical_dtype, message.header.shape)
 
         # Empty tensor handling
