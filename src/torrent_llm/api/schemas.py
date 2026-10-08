@@ -33,6 +33,13 @@ class ShardInfo(BaseModel):
     model_id: str
 
 
+class LinkInfo(BaseModel):
+    """The simulated link every hop is shaped to, when one is configured."""
+
+    latency_ms: float = Field(description="Round-trip time added to every hop")
+    bandwidth_mbps: float = Field(description="Capacity both directions are charged against")
+
+
 class TopologyResponse(BaseModel):
     """What the whole chain is hosting right now."""
 
@@ -42,6 +49,10 @@ class TopologyResponse(BaseModel):
     codec: str
     dtype: str
     shards: list[ShardInfo]
+    link: LinkInfo | None = Field(
+        default=None,
+        description="Simulated link, or null when timing is whatever the real network gives",
+    )
 
 
 class HopMetrics(BaseModel):

@@ -25,6 +25,7 @@ from torrent_llm.api.schemas import (
     GenerateResponse,
     HopMetrics,
     HopSummaryMetrics,
+    LinkInfo,
     ProfileRequest,
     ProfileResponse,
     SeqLenProfile,
@@ -71,6 +72,9 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
         description="Instrumentation over a layer-sharded inference chain.",
         version="0.1.0",
     )
+    # Kept on the app so a caller (or a test) can see what the chain was built
+    # from without re-reading the topology file.
+    app.state.config = config
 
     def runner_with_profiler() -> tuple[ChainRunner, HopProfiler]:
         """A fresh runner and profiler for one request.
@@ -120,6 +124,7 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
             codec=config.codec,
             dtype=config.dtype,
             shards=[ShardInfo(**row) for row in rows],
+            link=LinkInfo(**config.link.describe()) if config.link else None,
         )
 
     def _generate(request: GenerateRequest) -> GenerateResponse:

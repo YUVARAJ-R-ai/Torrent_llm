@@ -7,11 +7,14 @@ the suite uses has no tokenizer published anywhere and fetching a real one would
 make the suite need network access.
 """
 
+import dataclasses
+
 import pytest
 from fastapi.testclient import TestClient
 
 from torrent_llm.api import create_app
 from torrent_llm.codec import get_codec
+from torrent_llm.link import LinkProfile
 from torrent_llm.runner import TopologyConfig
 from torrent_llm.shard import ShardRuntime
 from torrent_llm.transport import serve
@@ -87,6 +90,19 @@ def test_topology_reports_what_each_node_hosts(client, num_layers):
         f"[0:{num_layers // 2})",
         f"[{num_layers // 2}:{num_layers})",
     ]
+
+
+def test_topology_reports_no_link_when_none_is_simulated(client):
+    assert client.get("/topology").json()["link"] is None
+
+
+def test_topology_reports_the_simulated_link(client):
+    config = dataclasses.replace(
+        client.app.state.config, link=LinkProfile(latency_ms=30, bandwidth_mbps=100)
+    )
+    shaped = TestClient(create_app(config, FakeTokenizer()))
+
+    assert shaped.get("/topology").json()["link"] == {"latency_ms": 30, "bandwidth_mbps": 100}
 
 
 def test_topology_asks_the_nodes_rather_than_echoing_the_config(client):
