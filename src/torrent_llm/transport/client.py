@@ -16,6 +16,7 @@ import grpc
 import torch
 
 from torrent_llm.codec import Codec, get_codec
+from torrent_llm.link import LinkProfile
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
@@ -85,10 +86,20 @@ class HopResult:
 class ShardClient:
     """Talks to one shard server."""
 
-    def __init__(self, address: str, codec: Codec, *, timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        address: str,
+        codec: Codec,
+        *,
+        timeout: float = 300.0,
+        link: LinkProfile | None = None,
+    ) -> None:
         self.address = address
         self.codec = codec
         self.timeout = timeout
+        #: Optional simulated link (see ``torrent_llm.link``). ``None`` means the
+        #: real network decides the timing, which on loopback is almost nothing.
+        self.link = link
         self.channel = grpc.insecure_channel(address, options=CHANNEL_OPTIONS)
         self.stub = pb_grpc.ShardServiceStub(self.channel)
 
@@ -156,7 +167,13 @@ class ShardClient:
         )
 
         started = time.perf_counter_ns()
+        if self.link is not None:
+            # Inside the timed window on purpose: the shaped delay has to land
+            # in transport_ns, where a real link's cost would.
+            time.sleep(self.link.one_way_s(message.payload_bytes))
         reply = self.stub.Forward(request, timeout=self.timeout)
+        if self.link is not None:
+            time.sleep(self.link.one_way_s(len(reply.payload)))
         wall_ns = time.perf_counter_ns() - started
 
         t_decode_start = time.perf_counter_ns()

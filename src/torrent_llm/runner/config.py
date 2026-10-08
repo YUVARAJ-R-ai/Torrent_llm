@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from torrent_llm.link import LinkProfile
 from torrent_llm.shard import ShardSpec, plan_even, plan_explicit, plan_weighted, validate_plan
 
 
@@ -51,6 +52,9 @@ class TopologyConfig:
     #: config mistake rather than catch one.
     weights: list[float] | None = None
     trust_remote_code: bool = False
+    #: Simulated link applied to every hop (see ``torrent_llm.link``). Lets one
+    #: machine stand in for a real network; ``None`` leaves timing to the OS.
+    link: LinkProfile | None = None
 
     def __post_init__(self) -> None:
         if self.boundaries and self.weights:
@@ -102,4 +106,5 @@ class TopologyConfig:
             boundaries=raw.get("boundaries"),
             weights=raw.get("weights"),
             trust_remote_code=bool(raw.get("trust_remote_code", False)),
+            link=LinkProfile.from_dict(raw.get("link")),
         )

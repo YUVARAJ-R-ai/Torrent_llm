@@ -55,7 +55,11 @@ class ChainRunner:
         self.config = config
         self.profiler = profiler
         self.clients = [
-            ShardClient(node.address, get_codec(config.codec, **config.codec_args))
+            ShardClient(
+                node.address,
+                get_codec(config.codec, **config.codec_args),
+                link=config.link,
+            )
             for node in config.nodes
         ]
 
