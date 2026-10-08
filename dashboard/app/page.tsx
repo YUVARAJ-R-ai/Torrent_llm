@@ -29,7 +29,8 @@ import { ApiError, api, type GenerateResult, type Topology } from "@/lib/api";
 import { formatBytes, formatMs } from "@/lib/format";
 import { buildTimeline, type Step } from "@/lib/replay";
 
-const MAX_NEW_TOKENS = 10;
+/** A ceiling, not a target: the chain stops as soon as the answer ends. */
+const MAX_NEW_TOKENS = 40;
 
 type Phase = "idle" | "waiting" | "playing" | "done";
 
@@ -58,9 +59,12 @@ export default function Demo() {
   const [topology, setTopology] = useState<Topology | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [prompt, setPrompt] = useState("The capital of France is");
+  const [prompt, setPrompt] = useState("What is the capital of France?");
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<GenerateResult | null>(null);
+  // The question as sent, so editing the box afterwards does not relabel
+  // the answer on screen.
+  const [asked, setAsked] = useState("");
 
   // Replay state: which link is lit, which node is busy, what has arrived.
   const [pulses, setPulses] = useState<number[]>([]);
@@ -156,9 +160,10 @@ export default function Demo() {
     runId.current++;
     resetStage();
     setError(null);
+    setAsked(prompt);
     setPhase("waiting");
     try {
-      const output = await api.generate(prompt, MAX_NEW_TOKENS, true);
+      const output = await api.generate(prompt, MAX_NEW_TOKENS, true, true);
       setResult(output);
       await play(output);
     } catch (e) {
@@ -359,9 +364,11 @@ export default function Demo() {
           border: "1px solid var(--border)",
         }}
       >
-        <span style={{ color: "var(--text-muted)" }}>
-          {result || phase === "waiting" ? prompt : ""}
-        </span>
+        {asked && (
+          <div className="mb-1 text-sm" style={{ color: "var(--text-muted)" }}>
+            {asked}
+          </div>
+        )}
         {tokens.map((token, i) => (
           <motion.span
             key={i}

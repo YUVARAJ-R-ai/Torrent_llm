@@ -35,6 +35,12 @@ const DECODE_SLOWDOWN = 1.5;
 /** Floors, in seconds, so even a 1 ms step is visible. */
 const PREFILL_FLOOR = { send: 0.7, compute: 0.45 };
 const DECODE_FLOOR = { send: 0.22, compute: 0.14 };
+/**
+ * Most seconds the decode steps may take on screen, all together. Short
+ * answers play at the floors above; a long one is sped up to fit, so the
+ * replay never drags no matter how many tokens came back.
+ */
+const DECODE_BUDGET_S = 7;
 
 function pace(
   realMs: number,
@@ -114,6 +120,15 @@ export function buildTimeline(
       steps.push({ kind: "token", text, seconds: prefill ? 0.3 : 0.05 });
     }
   });
+
+  // Everything after the first token belongs to decode passes.
+  const firstToken = steps.findIndex((step) => step.kind === "token");
+  const decode = firstToken < 0 ? [] : steps.slice(firstToken + 1);
+  const decodeSeconds = decode.reduce((sum, step) => sum + step.seconds, 0);
+  if (decodeSeconds > DECODE_BUDGET_S) {
+    const scale = DECODE_BUDGET_S / decodeSeconds;
+    for (const step of decode) step.seconds *= scale;
+  }
 
   return steps;
 }

@@ -177,13 +177,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   topology: () => request<Topology>("/topology"),
 
-  generate: (prompt: string, maxNewTokens: number, useCache: boolean) =>
+  /** `chat` asks a question (chat template) instead of continuing raw text. */
+  generate: (
+    prompt: string,
+    maxNewTokens: number,
+    useCache: boolean,
+    chat = false,
+  ) =>
     request<GenerateResult>("/generate", {
       method: "POST",
       body: JSON.stringify({
         prompt,
         max_new_tokens: maxNewTokens,
         use_cache: useCache,
+        chat,
       }),
     }),
 
