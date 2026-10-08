@@ -103,6 +103,19 @@ def test_greedy_decode_matches_the_reference_model(tiny_model, served_chain, inp
     assert torch.equal(ids, expected)
 
 
+def test_generation_stops_at_a_stop_token_without_appending_it(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        full, _ = runner.generate(input_ids, max_new_tokens=4)
+        # Make the third generated token a stop token: the run must end there.
+        stop = int(full[0, input_ids.shape[1] + 2])
+        ids, passes = runner.generate(input_ids, max_new_tokens=4, stop_token_ids={stop})
+
+    first_stop = (full[0, input_ids.shape[1] :] == stop).nonzero()[0].item()
+    assert torch.equal(ids, full[:, : input_ids.shape[1] + first_stop])
+    # The pass that picked the stop token still ran; it just added nothing.
+    assert len(passes) == first_stop + 1
+
+
 # --- topology config ---
 
 
