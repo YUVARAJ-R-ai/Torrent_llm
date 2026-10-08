@@ -25,6 +25,12 @@ export interface ShardInfo {
   model_id: string;
 }
 
+/** A simulated link every hop is shaped to; see `torrent_llm.link`. */
+export interface LinkInfo {
+  latency_ms: number;
+  bandwidth_mbps: number;
+}
+
 export interface Topology {
   model_id: string;
   num_layers: number;
@@ -32,6 +38,8 @@ export interface Topology {
   codec: string;
   dtype: string;
   shards: ShardInfo[];
+  /** Null when timing is whatever the real network gives. */
+  link: LinkInfo | null;
 }
 
 /** One activation crossing one hop. */
@@ -66,6 +74,8 @@ export interface GenerateResult {
   completion: string;
   full_text: string;
   tokens_generated: number;
+  /** The completion split per generated token; joined, they equal `completion`. */
+  tokens: string[];
   use_cache: boolean;
   total_sent_bytes: number;
   total_wall_ms: number;
