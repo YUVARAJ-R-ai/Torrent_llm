@@ -216,7 +216,7 @@ def test_node_address_splits_into_host_and_port():
     assert config.nodes[0].port == 50051
 
 
-@pytest.mark.parametrize("name", ["local-2shard.yaml", "lan-2machine.yaml"])
+@pytest.mark.parametrize("name", ["local-2shard.yaml", "lan-2machine.yaml", "demo-2device.yaml"])
 def test_shipped_configs_parse_and_plan(name):
     """The configs in the repo must actually work — a typo here wastes a rig session."""
     from pathlib import Path

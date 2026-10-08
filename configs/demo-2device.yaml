@@ -1,0 +1,26 @@
+# Two "devices" on one machine, joined by a simulated home-internet link.
+#
+# This is the showcase rig: two shard processes, each holding half the model,
+# with every hop shaped to the link below so the network cost is visible
+# instead of the ~1 ms loopback gives. The bytes on the wire are real; only the
+# timing is simulated. Moving to two real machines means replacing the
+# addresses (see lan-2machine.yaml) and deleting the link block.
+#
+#   scripts/demo.sh            # starts both shards, the API, and the dashboard
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+codec:
+  name: raw
+
+link:
+  latency_ms: 30        # a typical round trip between two homes in one city
+  bandwidth_mbps: 100   # a typical consumer upload/download
+
+nodes:
+  - address: 127.0.0.1:50051
+    device: cpu
+  - address: 127.0.0.1:50052
+    device: cpu
