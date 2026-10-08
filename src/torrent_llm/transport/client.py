@@ -15,7 +15,8 @@ from dataclasses import dataclass
 import grpc
 import torch
 
-from torrent_llm.codec import Codec
+from torrent_llm.codec import Codec, get_codec
+from torrent_llm.link import LinkProfile
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
@@ -49,6 +50,20 @@ class HopResult:
     #: Lets a caller notice session drift on the reply it already has rather
     #: than only on the next request it sends.
     cache_length: int = 0
+    #: Time spent encoding the outbound payload.
+    encode_ns: int = 0
+    #: Time spent decoding the inbound reply.
+    decode_ns: int = 0
+
+    @property
+    def codec_overhead_ns(self) -> int:
+        """Time spent encoding and decoding activations on this hop."""
+        return self.encode_ns + self.decode_ns
+
+    @property
+    def wire_only_ns(self) -> int:
+        """Transport latency with local encode/decode overhead subtracted."""
+        return max(0, self.transport_ns - self.codec_overhead_ns)
 
     @property
     def transport_ns(self) -> int:
@@ -71,10 +86,20 @@ class HopResult:
 class ShardClient:
     """Talks to one shard server."""
 
-    def __init__(self, address: str, codec: Codec, *, timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        address: str,
+        codec: Codec,
+        *,
+        timeout: float = 300.0,
+        link: LinkProfile | None = None,
+    ) -> None:
         self.address = address
         self.codec = codec
         self.timeout = timeout
+        #: Optional simulated link (see ``torrent_llm.link``). ``None`` means the
+        #: real network decides the timing, which on loopback is almost nothing.
+        self.link = link
         self.channel = grpc.insecure_channel(address, options=CHANNEL_OPTIONS)
         self.stub = pb_grpc.ShardServiceStub(self.channel)
 
@@ -125,7 +150,9 @@ class ShardClient:
                 position -- passing it is strongly preferred.
         """
         request_id = request_id or uuid.uuid4().hex
+        t_encode_start = time.perf_counter_ns()
         message = self.codec.encode(tensor, request_id=request_id, hop=hop)
+        encode_ns = time.perf_counter_ns() - t_encode_start
 
         request = pb.ForwardRequest(
             header=header_to_proto(message.header),
@@ -140,10 +167,23 @@ class ShardClient:
         )
 
         started = time.perf_counter_ns()
+        if self.link is not None:
+            # Inside the timed window on purpose: the shaped delay has to land
+            # in transport_ns, where a real link's cost would.
+            time.sleep(self.link.one_way_s(message.payload_bytes))
         reply = self.stub.Forward(request, timeout=self.timeout)
+        if self.link is not None:
+            time.sleep(self.link.one_way_s(len(reply.payload)))
         wall_ns = time.perf_counter_ns() - started
 
-        out = self.codec.decode(message_from_proto(reply.header, reply.payload))
+        t_decode_start = time.perf_counter_ns()
+        reply_msg = message_from_proto(reply.header, reply.payload)
+        if reply_msg.header.codec == self.codec.name:
+            out = self.codec.decode(reply_msg)
+        else:
+            out = get_codec(reply_msg.header.codec).decode(reply_msg)
+        decode_ns = time.perf_counter_ns() - t_decode_start
+
         return HopResult(
             tensor=out,
             is_final=reply.is_final,
@@ -156,6 +196,8 @@ class ShardClient:
             compute_ns=reply.compute_ns,
             codec=message.header.codec,
             cache_length=reply.cache_length,
+            encode_ns=encode_ns,
+            decode_ns=decode_ns,
         )
 
     def close(self) -> None:

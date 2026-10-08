@@ -70,6 +70,8 @@ class HopProfiler:
             uncompressed_bytes=result.sent_uncompressed_bytes,
             wall_ns=result.wall_ns,
             compute_ns=result.compute_ns,
+            encode_ns=getattr(result, "encode_ns", 0),
+            decode_ns=getattr(result, "decode_ns", 0),
             phase=phase,
             extra=dict(extra),
         )

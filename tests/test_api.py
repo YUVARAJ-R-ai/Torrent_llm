@@ -7,11 +7,14 @@ the suite uses has no tokenizer published anywhere and fetching a real one would
 make the suite need network access.
 """
 
+import dataclasses
+
 import pytest
 from fastapi.testclient import TestClient
 
 from torrent_llm.api import create_app
 from torrent_llm.codec import get_codec
+from torrent_llm.link import LinkProfile
 from torrent_llm.runner import TopologyConfig
 from torrent_llm.shard import ShardRuntime
 from torrent_llm.transport import serve
@@ -31,6 +34,13 @@ class FakeTokenizer:
 
     def decode(self, ids: list[int], skip_special_tokens: bool = True) -> str:
         return "".join(chr(int(i) % 256) for i in ids)
+
+
+class ChatFakeTokenizer(FakeTokenizer):
+    """FakeTokenizer plus a visible chat template, to see what was wrapped."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        return "".join(f"<{m['role']}:{m['content']}>" for m in messages) + "<assistant:"
 
 
 @pytest.fixture
@@ -89,6 +99,19 @@ def test_topology_reports_what_each_node_hosts(client, num_layers):
     ]
 
 
+def test_topology_reports_no_link_when_none_is_simulated(client):
+    assert client.get("/topology").json()["link"] is None
+
+
+def test_topology_reports_the_simulated_link(client):
+    config = dataclasses.replace(
+        client.app.state.config, link=LinkProfile(latency_ms=30, bandwidth_mbps=100)
+    )
+    shaped = TestClient(create_app(config, FakeTokenizer()))
+
+    assert shaped.get("/topology").json()["link"] == {"latency_ms": 30, "bandwidth_mbps": 100}
+
+
 def test_topology_asks_the_nodes_rather_than_echoing_the_config(client):
     # Each row carries the hidden size the *node* reported, which the config
     # never states -- proof this went over the wire rather than being read back
@@ -131,6 +154,53 @@ def test_generate_separates_the_prompt_from_the_completion(client):
     assert body["prompt"] == "abc"
     assert not body["completion"].startswith("abc")
     assert body["full_text"] == "abc" + body["completion"]
+
+
+def test_generate_splits_the_completion_per_token(client):
+    body = client.post("/generate", json={"prompt": "hello", "max_new_tokens": 5}).json()
+
+    assert len(body["tokens"]) == body["tokens_generated"] == 5
+    assert "".join(body["tokens"]) == body["completion"]
+
+
+def test_chat_mode_wraps_the_prompt_in_the_chat_template(client):
+    config = client.app.state.config
+    chat = TestClient(create_app(config, ChatFakeTokenizer(), system_prompt="be brief"))
+
+    body = chat.post("/generate", json={"prompt": "hi", "max_new_tokens": 2, "chat": True}).json()
+
+    # The chain saw the templated text, the caller sees only what they asked.
+    sent = "<system:be brief><user:hi><assistant:"
+    assert body["hops"][0]["seq_len"] == len(sent)
+    assert body["prompt"] == "hi"
+
+
+def test_chat_mode_can_drop_the_system_turn(client):
+    config = client.app.state.config
+    chat = TestClient(create_app(config, ChatFakeTokenizer(), system_prompt=None))
+
+    body = chat.post("/generate", json={"prompt": "hi", "max_new_tokens": 1, "chat": True}).json()
+
+    assert body["hops"][0]["seq_len"] == len("<user:hi><assistant:")
+
+
+def test_chat_mode_needs_a_chat_template(client):
+    response = client.post("/generate", json={"prompt": "hi", "chat": True})
+
+    assert response.status_code == 422
+    assert "chat template" in response.json()["detail"]
+
+
+def test_generation_stops_at_a_stop_token(client):
+    config = client.app.state.config
+    # Every id is a stop token, so the very first pick ends the answer.
+    stopping = TestClient(create_app(config, FakeTokenizer(), stop_token_ids=set(range(256))))
+
+    body = stopping.post("/generate", json={"prompt": "hello", "max_new_tokens": 8}).json()
+
+    assert body["tokens_generated"] == 0
+    assert body["completion"] == ""
+    assert {h["phase"] for h in body["hops"]} == {"prefill"}
 
 
 def test_generate_labels_the_first_pass_prefill_and_the_rest_decode(client):

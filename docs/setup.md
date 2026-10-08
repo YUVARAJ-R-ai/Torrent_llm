@@ -29,7 +29,31 @@ ruff check .
 If an import fails with `No module named 'torrent_llm.transport.activation_pb2'`,
 you skipped the codegen step.
 
-## Run a two-shard chain on one machine
+## Showcase demo (one command)
+
+```bash
+scripts/demo.sh
+```
+
+Starts both shards, the API and the dashboard for `configs/demo-2device.yaml`,
+waits until each is ready, and prints the URL. Ctrl+C stops all of it. Logs go
+to `/tmp/torrent-demo`. Pass another topology file as the first argument to run
+that instead.
+
+The demo topology adds a `link` block, which shapes every hop to a chosen round
+trip time and bandwidth:
+
+```yaml
+link:
+  latency_ms: 30
+  bandwidth_mbps: 100
+```
+
+The delay is added on the client inside the measured window, so it shows up as
+transport time exactly where a real link's cost would. Payloads are unchanged.
+Leave the block out to get whatever the real network gives, which on loopback
+is about a millisecond.
+
 
 Three terminals. The two shard processes each hold half the model's layers:
 

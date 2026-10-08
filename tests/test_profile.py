@@ -267,3 +267,22 @@ def test_a_nonpositive_ratio_is_rejected():
 
     with pytest.raises(ValueError, match="must be positive"):
         base.with_compression(0.0)
+
+
+def test_hop_record_reports_codec_overhead():
+    record = make_record(
+        wall_ns=10_000_000, compute_ns=4_000_000, encode_ns=500_000, decode_ns=300_000
+    )
+    assert record.codec_overhead_ns == 800_000
+    assert record.wire_only_ns == record.transport_ns - 800_000
+
+
+def test_summarize_by_hop_includes_codec_overhead():
+    records = [
+        make_record(hop=1, encode_ns=400_000, decode_ns=200_000),
+        make_record(hop=1, encode_ns=600_000, decode_ns=400_000),
+    ]
+    summaries = summarize_by_hop(records)
+    assert len(summaries) == 1
+    assert summaries[0].median_codec_overhead_ms == pytest.approx(0.8)
+    assert "codec_ms" in summaries[0].as_row()

@@ -33,6 +33,13 @@ class ShardInfo(BaseModel):
     model_id: str
 
 
+class LinkInfo(BaseModel):
+    """The simulated link every hop is shaped to, when one is configured."""
+
+    latency_ms: float = Field(description="Round-trip time added to every hop")
+    bandwidth_mbps: float = Field(description="Capacity both directions are charged against")
+
+
 class TopologyResponse(BaseModel):
     """What the whole chain is hosting right now."""
 
@@ -42,6 +49,10 @@ class TopologyResponse(BaseModel):
     codec: str
     dtype: str
     shards: list[ShardInfo]
+    link: LinkInfo | None = Field(
+        default=None,
+        description="Simulated link, or null when timing is whatever the real network gives",
+    )
 
 
 class HopMetrics(BaseModel):
@@ -136,6 +147,13 @@ class GenerateRequest(BaseModel):
             "that makes the cache's payoff measurable rather than assumed."
         ),
     )
+    chat: bool = Field(
+        default=False,
+        description=(
+            "Treat the prompt as a question to answer: wrap it in the model's chat "
+            "template first. False sends it as raw text for the model to continue."
+        ),
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -145,6 +163,12 @@ class GenerateResponse(BaseModel):
     completion: str = Field(description="Newly generated text only, without the prompt echoed back")
     full_text: str
     tokens_generated: int
+    tokens: list[str] = Field(
+        description=(
+            "The completion split per generated token, in order. Joined, they equal "
+            "`completion`. Lets a viewer reveal the text one decode step at a time."
+        )
+    )
     use_cache: bool
 
     total_sent_bytes: int

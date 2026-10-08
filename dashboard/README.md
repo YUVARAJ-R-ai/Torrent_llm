@@ -7,6 +7,17 @@ final interface for this project, and this directory is not a commitment to one.
 It exists so the chain's behaviour is legible while the parts that matter — the
 compressor (#8, #9) and the headline benchmark (#12) — get built.
 
+## Two pages
+
+- `/` is the showcase. Two devices, the links between them, and a prompt box.
+  It replays a real `/generate` run as an animation: each hop's payload travels
+  along its link with its real size, each device lights up while it computes,
+  and the answer appears token by token. Only the pacing is changed, in
+  `lib/replay.ts`.
+- `/details` is the testing view described below.
+
+The quickest way to run everything is `scripts/demo.sh` from the repo root.
+
 ## Running it
 
 Three processes. The dashboard talks only to the HTTP API; it has no torch, no

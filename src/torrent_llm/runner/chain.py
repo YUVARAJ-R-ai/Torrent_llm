@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import torch
@@ -55,7 +56,11 @@ class ChainRunner:
         self.config = config
         self.profiler = profiler
         self.clients = [
-            ShardClient(node.address, get_codec(config.codec, **config.codec_args))
+            ShardClient(
+                node.address,
+                get_codec(config.codec, **config.codec_args),
+                link=config.link,
+            )
             for node in config.nodes
         ]
 
@@ -162,7 +167,12 @@ class ChainRunner:
         )
 
     def generate(
-        self, input_ids: torch.Tensor, *, max_new_tokens: int = 16, use_cache: bool = True
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int = 16,
+        use_cache: bool = True,
+        stop_token_ids: Collection[int] = (),
     ) -> tuple[torch.Tensor, list[ChainResult]]:
         """Greedy decode.
 
@@ -188,6 +198,14 @@ class ChainRunner:
         rather than by anything this method does — see ``SessionStore`` for why
         a best-effort signal plus a backstop beats trying to guarantee cleanup
         from the calling side, which a network partition can defeat anyway.
+
+        ``stop_token_ids`` ends generation as soon as the model picks one of
+        them, the way a chat model says it has finished answering. The stop
+        token itself is not appended. Stopping early has the same cleanup
+        story as a failure: the step that chose the stop token was not marked
+        ``end_of_request`` (nothing could know yet), so each shard frees that
+        session on its TTL sweep. Sending one more pass only to free a few KiB
+        of cache would cost a full round trip per request.
         """
         request_id = uuid.uuid4().hex
         ids = input_ids
@@ -214,6 +232,8 @@ class ChainRunner:
             passes.append(result)
             cache_position += sent.shape[1]
             next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(ids.device)
+            if next_token.item() in stop_token_ids:
+                break
             ids = torch.cat([ids, next_token], dim=1)
             sent = next_token if use_cache else ids
         return ids, passes

@@ -1,0 +1,20 @@
+# Single-machine two-process rig with low-rank activation compression (Issue #8).
+#
+#   torrent-shard --config configs/local-2shard-lowrank.yaml --index 0
+#   torrent-shard --config configs/local-2shard-lowrank.yaml --index 1
+#   torrent-run   --config configs/local-2shard-lowrank.yaml --prompt "The capital of France is"
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+codec:
+  name: lowrank
+  rank: 128
+  seed: 42
+
+nodes:
+  - address: 127.0.0.1:50051
+    device: cpu
+  - address: 127.0.0.1:50052
+    device: cpu
