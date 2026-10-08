@@ -97,6 +97,13 @@ pids+=("$!")
 until curl -sf "http://127.0.0.1:$api_port/health" >/dev/null; do sleep 1; done
 until curl -sf -o /dev/null "http://127.0.0.1:$web_port"; do sleep 1; done
 
+# The first request on a GPU pays for CUDA kernel setup, about a second. Spend
+# it here so the first run in front of an audience is as fast as the rest.
+echo "warming up the model"
+curl -sf -X POST "http://127.0.0.1:$api_port/generate" \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Hi","max_new_tokens":2,"chat":true}' >/dev/null || true
+
 echo
 echo "ready: open http://localhost:$web_port"
 echo "Ctrl+C to stop everything"
