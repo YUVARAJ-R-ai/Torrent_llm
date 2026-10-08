@@ -36,6 +36,13 @@ class FakeTokenizer:
         return "".join(chr(int(i) % 256) for i in ids)
 
 
+class ChatFakeTokenizer(FakeTokenizer):
+    """FakeTokenizer plus a visible chat template, to see what was wrapped."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        return "".join(f"<{m['role']}:{m['content']}>" for m in messages) + "<assistant:"
+
+
 @pytest.fixture
 def client(model_factory, num_layers):
     """A TestClient wired to a real 2-shard chain running in this process."""
@@ -154,6 +161,46 @@ def test_generate_splits_the_completion_per_token(client):
 
     assert len(body["tokens"]) == body["tokens_generated"] == 5
     assert "".join(body["tokens"]) == body["completion"]
+
+
+def test_chat_mode_wraps_the_prompt_in_the_chat_template(client):
+    config = client.app.state.config
+    chat = TestClient(create_app(config, ChatFakeTokenizer(), system_prompt="be brief"))
+
+    body = chat.post("/generate", json={"prompt": "hi", "max_new_tokens": 2, "chat": True}).json()
+
+    # The chain saw the templated text, the caller sees only what they asked.
+    sent = "<system:be brief><user:hi><assistant:"
+    assert body["hops"][0]["seq_len"] == len(sent)
+    assert body["prompt"] == "hi"
+
+
+def test_chat_mode_can_drop_the_system_turn(client):
+    config = client.app.state.config
+    chat = TestClient(create_app(config, ChatFakeTokenizer(), system_prompt=None))
+
+    body = chat.post("/generate", json={"prompt": "hi", "max_new_tokens": 1, "chat": True}).json()
+
+    assert body["hops"][0]["seq_len"] == len("<user:hi><assistant:")
+
+
+def test_chat_mode_needs_a_chat_template(client):
+    response = client.post("/generate", json={"prompt": "hi", "chat": True})
+
+    assert response.status_code == 422
+    assert "chat template" in response.json()["detail"]
+
+
+def test_generation_stops_at_a_stop_token(client):
+    config = client.app.state.config
+    # Every id is a stop token, so the very first pick ends the answer.
+    stopping = TestClient(create_app(config, FakeTokenizer(), stop_token_ids=set(range(256))))
+
+    body = stopping.post("/generate", json={"prompt": "hello", "max_new_tokens": 8}).json()
+
+    assert body["tokens_generated"] == 0
+    assert body["completion"] == ""
+    assert {h["phase"] for h in body["hops"]} == {"prefill"}
 
 
 def test_generate_labels_the_first_pass_prefill_and_the_rest_decode(client):

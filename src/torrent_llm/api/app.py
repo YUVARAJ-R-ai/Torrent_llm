@@ -14,6 +14,7 @@ be restarted freely without paying to reload a checkpoint.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import Protocol
 
 import torch
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 #: know the model's vocab size to avoid indexing past its embedding table.
 _PROFILE_TOKEN_CEILING = 100
 
+#: Steers chat mode toward the short, plain answers a live demo wants. Small
+#: models otherwise drift into markdown and long explanations.
+DEFAULT_SYSTEM_PROMPT = "Answer in one short, plain sentence. No markdown."
+
 
 class Tokenizer(Protocol):
     """The only two tokenizer operations this layer needs.
@@ -57,7 +62,13 @@ class Tokenizer(Protocol):
     def decode(self, ids: list[int], skip_special_tokens: bool = True) -> str: ...
 
 
-def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
+def create_app(
+    config: TopologyConfig,
+    tokenizer: Tokenizer,
+    *,
+    stop_token_ids: Collection[int] = (),
+    system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
+) -> FastAPI:
     """Build the API around an already-running chain.
 
     Args:
@@ -66,6 +77,11 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
             them and does not check that they are reachable, so that the API can
             boot in any order relative to the nodes.
         tokenizer: Anything satisfying :class:`Tokenizer`.
+        stop_token_ids: Token ids that end a generation early, normally the
+            model's end-of-turn tokens. Empty means always run to
+            ``max_new_tokens``.
+        system_prompt: Prepended as the system turn in chat mode; ``None`` or
+            empty sends the user turn alone.
     """
     app = FastAPI(
         title="Torrent-LLM",
@@ -89,8 +105,9 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
         profiler = HopProfiler()
         return ChainRunner(config, profiler=profiler), profiler
 
-    def encode_prompt(prompt: str) -> torch.Tensor:
-        ids = tokenizer.encode(prompt)
+    def encode_prompt(prompt: str, *, chat: bool = False) -> torch.Tensor:
+        text = render_chat(prompt) if chat else prompt
+        ids = tokenizer.encode(text)
         if not ids:
             # An empty prompt gives the first shard a zero-length sequence,
             # which fails somewhere deep in attention with a shape error that
@@ -100,6 +117,27 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
                 detail="prompt encoded to zero tokens; nothing to run through the chain",
             )
         return torch.tensor([ids], dtype=torch.long)
+
+    def render_chat(prompt: str) -> str:
+        """Wrap a question in the model's own chat template.
+
+        A chat model given bare text treats it as something to continue, not
+        a question to answer: "Capital of India" comes back as "is located in
+        the state of which country?". The template is what tells it a user
+        asked something and it is now the assistant's turn.
+        """
+        template = getattr(tokenizer, "apply_chat_template", None)
+        if template is None:
+            raise HTTPException(
+                status_code=422, detail="this model's tokenizer has no chat template"
+            )
+        messages = [{"role": "user", "content": prompt}]
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        # enable_thinking is Qwen3's switch for its reasoning preamble, which
+        # would spend the whole token budget before the answer starts.
+        # Templates that do not use it ignore it.
+        return template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
 
     @app.get("/topology", response_model=TopologyResponse)
     def topology() -> TopologyResponse:
@@ -129,7 +167,7 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
 
     def _generate(request: GenerateRequest) -> GenerateResponse:
         """Shared by /generate and /compare-cache so the two cannot drift apart."""
-        input_ids = encode_prompt(request.prompt)
+        input_ids = encode_prompt(request.prompt, chat=request.chat)
         prompt_len = input_ids.shape[1]
 
         runner, profiler = runner_with_profiler()
@@ -138,6 +176,7 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
                 input_ids,
                 max_new_tokens=request.max_new_tokens,
                 use_cache=request.use_cache,
+                stop_token_ids=stop_token_ids,
             )
         except Exception as exc:
             raise HTTPException(

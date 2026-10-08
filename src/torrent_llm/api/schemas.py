@@ -147,6 +147,13 @@ class GenerateRequest(BaseModel):
             "that makes the cache's payoff measurable rather than assumed."
         ),
     )
+    chat: bool = Field(
+        default=False,
+        description=(
+            "Treat the prompt as a question to answer: wrap it in the model's chat "
+            "template first. False sends it as raw text for the model to continue."
+        ),
+    )
 
 
 class GenerateResponse(BaseModel):
