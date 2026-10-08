@@ -289,7 +289,10 @@ export default function Demo() {
       </section>
 
       {/* ---- prompt ---- */}
+      {/* autoComplete off stops Firefox restoring the button's disabled state
+          on reload, which made the server and client HTML disagree. */}
       <form
+        autoComplete="off"
         className="flex flex-col gap-2 sm:flex-row"
         onSubmit={(event) => {
           event.preventDefault();
