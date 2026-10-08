@@ -103,6 +103,19 @@ def test_greedy_decode_matches_the_reference_model(tiny_model, served_chain, inp
     assert torch.equal(ids, expected)
 
 
+def test_generation_stops_at_a_stop_token_without_appending_it(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        full, _ = runner.generate(input_ids, max_new_tokens=4)
+        # Make the third generated token a stop token: the run must end there.
+        stop = int(full[0, input_ids.shape[1] + 2])
+        ids, passes = runner.generate(input_ids, max_new_tokens=4, stop_token_ids={stop})
+
+    first_stop = (full[0, input_ids.shape[1] :] == stop).nonzero()[0].item()
+    assert torch.equal(ids, full[:, : input_ids.shape[1] + first_stop])
+    # The pass that picked the stop token still ran; it just added nothing.
+    assert len(passes) == first_stop + 1
+
+
 # --- topology config ---
 
 
@@ -216,7 +229,7 @@ def test_node_address_splits_into_host_and_port():
     assert config.nodes[0].port == 50051
 
 
-@pytest.mark.parametrize("name", ["local-2shard.yaml", "lan-2machine.yaml"])
+@pytest.mark.parametrize("name", ["local-2shard.yaml", "lan-2machine.yaml", "demo-2device.yaml"])
 def test_shipped_configs_parse_and_plan(name):
     """The configs in the repo must actually work — a typo here wastes a rig session."""
     from pathlib import Path

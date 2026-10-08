@@ -44,6 +44,29 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 
 ---
 
+## See It Working
+
+```bash
+scripts/demo.sh          # then open http://localhost:3000
+```
+
+This starts two shard processes that each hold half of Qwen3-0.6B, the HTTP
+API, and the dashboard. Type a prompt and the page shows the request moving
+through the chain: token ids into device A, the hidden state across the link to
+device B, and scores back out, one token at a time, with the bytes and timings
+of every hop.
+
+Both "devices" run on one machine. Every hop is shaped to a simulated home link
+(30 ms, 100 Mbps, set in `configs/demo-2device.yaml`) so the network cost is
+visible. The bytes on the wire are real; only the timing is simulated. To use two
+real machines, use `configs/lan-2machine.yaml` instead (see
+[docs/setup.md](docs/setup.md)).
+
+The page replays the measured run slowed down so each transfer can be followed.
+The dense testing view is still there at `/details`.
+
+---
+
 ## Project Status
 
 The layer-sharded pipeline is built and measured; the compressor is next.
