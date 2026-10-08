@@ -149,6 +149,13 @@ def test_generate_separates_the_prompt_from_the_completion(client):
     assert body["full_text"] == "abc" + body["completion"]
 
 
+def test_generate_splits_the_completion_per_token(client):
+    body = client.post("/generate", json={"prompt": "hello", "max_new_tokens": 5}).json()
+
+    assert len(body["tokens"]) == body["tokens_generated"] == 5
+    assert "".join(body["tokens"]) == body["completion"]
+
+
 def test_generate_labels_the_first_pass_prefill_and_the_rest_decode(client):
     body = client.post("/generate", json={"prompt": "hello", "max_new_tokens": 3}).json()
 

@@ -156,6 +156,12 @@ class GenerateResponse(BaseModel):
     completion: str = Field(description="Newly generated text only, without the prompt echoed back")
     full_text: str
     tokens_generated: int
+    tokens: list[str] = Field(
+        description=(
+            "The completion split per generated token, in order. Joined, they equal "
+            "`completion`. Lets a viewer reveal the text one decode step at a time."
+        )
+    )
     use_cache: bool
 
     total_sent_bytes: int

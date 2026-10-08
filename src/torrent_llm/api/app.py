@@ -149,11 +149,22 @@ def create_app(config: TopologyConfig, tokenizer: Tokenizer) -> FastAPI:
         generated_ids = ids[0, prompt_len:].tolist()
         records = profiler.records
 
+        # Each token's text is the growth of the decoded prefix, not the token
+        # decoded alone: a multi-byte character can span two tokens, and
+        # decoding either half on its own yields a replacement character.
+        tokens: list[str] = []
+        previous = ""
+        for end in range(1, len(generated_ids) + 1):
+            text = tokenizer.decode(generated_ids[:end], skip_special_tokens=True)
+            tokens.append(text[len(previous) :])
+            previous = text
+
         return GenerateResponse(
             prompt=request.prompt,
             completion=tokenizer.decode(generated_ids, skip_special_tokens=True),
             full_text=tokenizer.decode(ids[0].tolist(), skip_special_tokens=True),
             tokens_generated=len(generated_ids),
+            tokens=tokens,
             use_cache=request.use_cache,
             total_sent_bytes=sum(r.sent_bytes for r in records),
             total_wall_ms=sum(r.wall_ns for r in records) / 1e6,
