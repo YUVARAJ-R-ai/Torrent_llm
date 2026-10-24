@@ -26,10 +26,10 @@ browser ──HTTP──▶ torrent-api                                  (laptop
                   shard 0: embed -> layers 0–13 -> hidden state [1×N×1024] float32
                     │
                     ▼ gRPC hop 1  ═══════ crosses the network ═══════▶  (laptop B)
-                  shard 1: layers 14–27 -> norm -> LM head -> logits [1×1×151936]
+                  shard 1: layers 14–27 -> norm -> LM head -> picks the next token
                     │
-                    ◀══════════════ scores come back ══════════════
-                  torrent-api picks the highest-scoring token, appends it, repeats
+                    ◀══════════ the chosen token comes back (8 bytes) ══════════
+                  torrent-api appends it and repeats
 ```
 
 **Prefill vs decode.** The first step sends the whole prompt: a hidden state of
@@ -37,11 +37,13 @@ browser ──HTTP──▶ torrent-api                                  (laptop
 **one** position, 4 KiB, because each shard keeps a KV cache for its own layers
 (#24). The prompt is processed once, and each new token costs a 4 KiB hop.
 
-**The largest payload is the answer, not the activation.** The last shard
-returns scores over the whole vocabulary: 151936 × 4 bytes = 593.5 KiB per
-token, about 148× the hidden state. See the README's findings.
-Compressing the hidden state (#8) is the research contribution; trimming the
-logits reply is a separate, easier fix.
+**The last shard picks the token itself (#33).** Its LM head produces scores
+over the whole vocabulary: 151936 × 4 bytes = 593.5 KiB per token, about 148×
+the hidden state. Shipping those back only to take the top one was the largest
+cost on the wire, so the last shard now applies the choice (greedy, or seeded
+sampling) and returns the token id, 8 bytes. `forward()` without a sampling rule
+still returns full logits, which perplexity evaluation needs. Compressing the
+hidden state (#8) remains the research contribution.
 
 **Who talks to whom.** The API process is the coordinator: it calls each shard
 in turn and carries the hidden state between them (hub and spoke, not A → B
@@ -165,14 +167,14 @@ cd dashboard && npm ci && npm run dev
 1. **Both terminals side by side.** Laptop B logs every hop it serves, with the
    sender's address:
    ```
-   hop 1 from 100.101.183.19: hidden state [1x35x1024] float32, 140.0 KiB in -> shard1[14:28] in 182.4 ms -> logits 593.5 KiB out
-   hop 1 from 100.101.183.19: hidden state [1x1x1024] float32, 4.0 KiB in -> shard1[14:28] in 41.2 ms -> logits 593.5 KiB out
+   hop 1 from 100.101.183.19: hidden state [1x35x1024] float32, 140.0 KiB in -> shard1[14:28] in 182.4 ms -> token 8 B out
+   hop 1 from 100.101.183.19: hidden state [1x1x1024] float32, 4.0 KiB in -> shard1[14:28] in 41.2 ms -> token 8 B out
    ```
    The first line is the prefill; every line after is one generated token.
 2. **The dashboard.** The badge reads *Real network · 2 machines*, and each
    device card shows its hostname, OS and device. Ask a question and the
    animation replays the measured run: token ids into A, the hidden state across
-   to B, the scores back.
+   to B, the chosen token back.
 3. **Detailed metrics** (`/details`) gives per-hop bytes and the compute and
    transport split for every step.
 4. **The KV cache's effect**, in one number:

@@ -19,6 +19,7 @@ import torch
 from transformers.cache_utils import Cache
 
 from torrent_llm.codec import Codec, RawCodec
+from torrent_llm.sampling import Sampling, select_tokens
 from torrent_llm.shard import ShardRuntime, ShardSpec
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
@@ -112,6 +113,12 @@ class ShardService(pb_grpc.ShardServiceServicer):
             output = self.runtime.forward(
                 hidden_states=tensor, position_ids=position_ids, cache=cache
             )
+        tensor = output.tensor
+        # Choosing here, inside the timed window, keeps compute_ns honest: the
+        # selection is work this shard now does instead of the client.
+        choose_token = self.runtime.spec.is_last and request.HasField("sampling")
+        if choose_token:
+            tensor = select_tokens(tensor, _sampling_from_proto(request.sampling))
         _synchronize(self.runtime.device)
         compute_ns = time.perf_counter_ns() - started
 
@@ -121,8 +128,7 @@ class ShardService(pb_grpc.ShardServiceServicer):
             # line, which is exactly why SessionStore also carries a TTL sweep.
             self.sessions.drop(message.header.request_id)
 
-        tensor = output.tensor
-        if self.runtime.spec.is_last:
+        if self.runtime.spec.is_last and not choose_token:
             tensor = _trim_logits(tensor, request.logits_keep_last)
 
         reply_message = self.output_codec.encode(
@@ -134,7 +140,7 @@ class ShardService(pb_grpc.ShardServiceServicer):
         return pb.ForwardReply(
             header=header_to_proto(reply_message.header),
             payload=reply_message.payload,
-            kind=pb.PAYLOAD_KIND_ACTIVATION,
+            kind=pb.PAYLOAD_KIND_TOKEN_IDS if choose_token else pb.PAYLOAD_KIND_ACTIVATION,
             compute_ns=compute_ns,
             is_final=self.runtime.spec.is_last,
             cache_length=self._cache_length(cache),
@@ -223,7 +229,10 @@ def _log_hop(
     """
     kind = "token ids" if request.kind == pb.PAYLOAD_KIND_TOKEN_IDS else "hidden state"
     shape = "x".join(str(d) for d in request.header.shape)
-    out = "logits" if reply.is_final else "hidden state"
+    if reply.kind == pb.PAYLOAD_KIND_TOKEN_IDS:
+        out = "token"
+    else:
+        out = "logits" if reply.is_final else "hidden state"
     logger.info(
         "hop %d from %s: %s [%s] %s, %s in -> %s in %.1f ms -> %s %s out",
         request.header.hop,
@@ -239,6 +248,10 @@ def _log_hop(
     )
 
 
+def _sampling_from_proto(proto: pb.Sampling) -> Sampling:
+    return Sampling(temperature=proto.temperature, top_k=proto.top_k, seed=proto.seed)
+
+
 def _peer_host(peer: str) -> str:
     """``ipv4:192.168.1.10:53122`` -> ``192.168.1.10``; anything else unchanged."""
     if peer.startswith("ipv4:"):
@@ -249,7 +262,8 @@ def _peer_host(peer: str) -> str:
 
 
 def _kib(nbytes: int) -> str:
-    return f"{nbytes / 1024:.1f} KiB"
+    # A chosen token is 8 bytes; "0.0 KiB" would read as nothing sent at all.
+    return f"{nbytes} B" if nbytes < 1024 else f"{nbytes / 1024:.1f} KiB"
 
 
 def _trim_logits(logits: torch.Tensor, keep_last: int) -> torch.Tensor:

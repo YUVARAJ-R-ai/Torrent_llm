@@ -35,6 +35,7 @@ from torrent_llm.api.schemas import (
 )
 from torrent_llm.profile import HopProfiler, bandwidth_verdict, summarize_by_hop
 from torrent_llm.runner import ChainRunner, TopologyConfig
+from torrent_llm.sampling import GREEDY
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,9 @@ def create_app(
                 # needing to know.
                 ids = torch.randint(0, _PROFILE_TOKEN_CEILING, (1, seq_len))
                 for _ in range(request.repeats):
-                    runner.forward(ids, logits_keep_last=1)
+                    # As generation sends it: the final shard replies with
+                    # the chosen token, not logits (issue #33).
+                    runner.forward(ids, sampling=GREEDY)
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"chain failed during profiling: {exc}"

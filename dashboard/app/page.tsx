@@ -6,7 +6,7 @@
  * Everything on screen comes from a real run. The prompt goes to the API, the
  * API drives the shard chain, and the per-hop records that come back are
  * replayed here as an animation: tokens into the first device, the hidden
- * state across the link to the second, scores back out, one decode step at a
+ * state across the link to the second, the chosen token back out, one decode step at a
  * time. Only the pacing is slowed so it can be followed; see lib/replay.ts.
  *
  * The dense testing view this replaced lives at /details.
@@ -208,7 +208,7 @@ export default function Demo() {
   );
 
   const captions = Array.from({ length: numLinks }, (_, i) =>
-    i === 0 ? "prompt" : i === numLinks - 1 ? "scores" : "hidden state",
+    i === 0 ? "prompt" : i === numLinks - 1 ? "next token" : "hidden state",
   );
 
   return (
