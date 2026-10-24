@@ -9,6 +9,8 @@ so swapping in the learned compressor (issue #8) needs no change here.
 from __future__ import annotations
 
 import logging
+import platform
+import socket
 import time
 from concurrent import futures
 
@@ -17,7 +19,7 @@ import torch
 from transformers.cache_utils import Cache
 
 from torrent_llm.codec import Codec, RawCodec
-from torrent_llm.shard import ShardRuntime
+from torrent_llm.shard import ShardRuntime, ShardSpec
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
@@ -66,7 +68,9 @@ class ShardService(pb_grpc.ShardServiceServicer):
 
     def Forward(self, request: pb.ForwardRequest, context) -> pb.ForwardReply:  # noqa: N802
         try:
-            return self._forward(request)
+            reply = self._forward(request)
+            _log_hop(self.runtime.spec, context.peer(), request, reply)
+            return reply
         except CacheSessionLost as exc:
             # Not INTERNAL: nothing is broken here and the caller can recover by
             # re-prefilling. FAILED_PRECONDITION is what says "your assumption
@@ -171,6 +175,8 @@ class ShardService(pb_grpc.ShardServiceServicer):
             device=str(self.runtime.device),
             is_first=spec.is_first,
             is_last=spec.is_last,
+            hostname=socket.gethostname(),
+            os=platform.system(),
         )
 
 
@@ -204,6 +210,46 @@ def serve(
     server.start()
     logger.info("serving %s on %s:%d", runtime.spec, host, bound)
     return server, bound
+
+
+def _log_hop(
+    spec: ShardSpec, peer: str, request: pb.ForwardRequest, reply: pb.ForwardReply
+) -> None:
+    """One line per hop served: who sent what, what ran, what went back.
+
+    On a multi-machine rig this is the receiving machine's own record of the
+    traffic, so each terminal shows the activations actually arriving over the
+    network rather than the runner's account of having sent them.
+    """
+    kind = "token ids" if request.kind == pb.PAYLOAD_KIND_TOKEN_IDS else "hidden state"
+    shape = "x".join(str(d) for d in request.header.shape)
+    out = "logits" if reply.is_final else "hidden state"
+    logger.info(
+        "hop %d from %s: %s [%s] %s, %s in -> %s in %.1f ms -> %s %s out",
+        request.header.hop,
+        _peer_host(peer),
+        kind,
+        shape,
+        request.header.dtype,
+        _kib(len(request.payload)),
+        spec,
+        reply.compute_ns / 1e6,
+        out,
+        _kib(len(reply.payload)),
+    )
+
+
+def _peer_host(peer: str) -> str:
+    """``ipv4:192.168.1.10:53122`` -> ``192.168.1.10``; anything else unchanged."""
+    if peer.startswith("ipv4:"):
+        return peer.removeprefix("ipv4:").rsplit(":", 1)[0]
+    if peer.startswith("ipv6:"):
+        return peer.removeprefix("ipv6:").rsplit(":", 1)[0].strip("[]")
+    return peer
+
+
+def _kib(nbytes: int) -> str:
+    return f"{nbytes / 1024:.1f} KiB"
 
 
 def _trim_logits(logits: torch.Tensor, keep_last: int) -> torch.Tensor:

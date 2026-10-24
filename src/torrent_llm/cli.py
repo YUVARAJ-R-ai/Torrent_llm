@@ -32,6 +32,20 @@ def shard_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Serve one Torrent-LLM shard.")
     parser.add_argument("--config", required=True, help="topology YAML")
     parser.add_argument("--index", type=int, required=True, help="which node in the topology")
+    parser.add_argument(
+        "--bind",
+        default=None,
+        help=(
+            "address to listen on (default: the host this node has in the topology). "
+            "Use 0.0.0.0 on a multi-machine rig so the shard answers on every "
+            "interface -- Wi-Fi, Ethernet and Tailscale alike."
+        ),
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="override the node's device: cpu, cuda, mps or auto (default: from the topology)",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
@@ -42,22 +56,23 @@ def shard_main(argv: list[str] | None = None) -> int:
 
     node = config.nodes[args.index]
     spec = config.shard_plan()[args.index]
+    host = args.bind or node.host
 
     runtime = load_shard(
         config.model_id,
         spec,
-        device=node.device,
+        device=args.device or node.device,
         dtype=getattr(torch, config.dtype),
         trust_remote_code=config.trust_remote_code,
     )
     server, port = serve(
         runtime,
         get_codec(config.codec, **config.codec_args),
-        host=node.host,
+        host=host,
         port=node.port,
         model_id=config.model_id,
     )
-    print(f"{spec} serving on {node.host}:{port} ({runtime.dtype} on {node.device})")
+    print(f"{spec} serving on {host}:{port} ({runtime.dtype} on {runtime.device})")
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:

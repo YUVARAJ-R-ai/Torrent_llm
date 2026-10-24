@@ -252,6 +252,8 @@ class ChainRunner:
                     "device": info.device,
                     "dtype": info.dtype,
                     "model_id": info.model_id,
+                    "hostname": info.hostname,
+                    "os": info.os,
                 }
             )
         return out

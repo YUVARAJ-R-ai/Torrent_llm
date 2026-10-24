@@ -64,6 +64,7 @@ def load_shard(
     the safetensors index is the obvious optimisation once shard sizes actually
     strain the box; it does not change this function's contract.
     """
+    device = resolve_device(device)
     logger.info("loading %s for %s on %s (%s)", model_id, spec, device, dtype)
     model = AutoModelForCausalLM.from_pretrained(
         model_id, dtype=dtype, trust_remote_code=trust_remote_code
@@ -244,6 +245,25 @@ def _decoder_stack(model: nn.Module) -> nn.Module:
         f"{type(model).__name__} does not expose the decoder stack this harness shards "
         "(expected .layers, .embed_tokens, .norm and .rotary_emb)"
     )
+
+
+def resolve_device(device: str) -> str:
+    """Turn ``"auto"`` into the best accelerator this machine actually has.
+
+    A topology file is shared between machines that do not share hardware: one
+    laptop has an NVIDIA GPU, the next a Mac's Apple silicon, the third only a
+    CPU. ``auto`` lets one file describe all of them, where hard-coding ``cuda``
+    makes every node without CUDA fail at load time. Anything other than
+    ``auto`` is returned unchanged, so an explicit choice is never second-guessed.
+    """
+    if device != "auto":
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def num_layers_of(model_id: str, *, trust_remote_code: bool = False) -> int:

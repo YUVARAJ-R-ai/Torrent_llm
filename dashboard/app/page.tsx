@@ -49,6 +49,21 @@ const ZERO: Totals = {
 };
 
 /** "[0:14)" from the API, shown as "Layers 0–13". */
+/** Distinct machines in the chain, by the names the shards report. */
+function machineCount(topology: Topology): number {
+  const named = topology.shards.map((s) => s.hostname).filter(Boolean);
+  // A shard too old to report its hostname counts as its own machine.
+  return named.length === topology.shards.length
+    ? new Set(named).size
+    : topology.shards.length;
+}
+
+/** "WINDOWS · CUDA:0", or just the device when the OS is not reported. */
+function hardwareLabel(shard: Topology["shards"][number]): string {
+  const os = shard.os === "Darwin" ? "macOS" : shard.os;
+  return (os ? `${os} · ${shard.device}` : shard.device).toUpperCase();
+}
+
 function layerLabel(range: string): string {
   const match = /\[(\d+):(\d+)\)/.exec(range);
   if (!match) return range;
@@ -229,7 +244,7 @@ export default function Demo() {
           <span style={{ color: "var(--text-secondary)" }}>
             {topology ? topology.model_id : "Connecting to the chain…"}
           </span>
-          {topology?.link && (
+          {topology && (
             <span
               className="tabular rounded-full px-2.5 py-1"
               style={{
@@ -237,8 +252,9 @@ export default function Demo() {
                 color: "var(--text-secondary)",
               }}
             >
-              Simulated network · {topology.link.bandwidth_mbps} Mbps ·{" "}
-              {topology.link.latency_ms} ms
+              {topology.link
+                ? `Simulated network · ${topology.link.bandwidth_mbps} Mbps · ${topology.link.latency_ms} ms`
+                : `Real network · ${machineCount(topology)} ${machineCount(topology) === 1 ? "machine" : "machines"}`}
             </span>
           )}
         </div>
@@ -261,7 +277,8 @@ export default function Demo() {
               }}
               name={`Device ${String.fromCharCode(65 + i)}`}
               detail={shard ? layerLabel(shard.layers) : "…"}
-              hardware={shard?.device.toUpperCase()}
+              host={shard?.hostname || undefined}
+              hardware={shard ? hardwareLabel(shard) : undefined}
               busy={busy === i}
               computeMs={lastCompute[i] ?? null}
             />
@@ -461,11 +478,12 @@ const Device = forwardRef<
   {
     name: string;
     detail: string;
+    host?: string;
     hardware?: string;
     busy: boolean;
     computeMs: number | null;
   }
->(function Device({ name, detail, hardware, busy, computeMs }, ref) {
+>(function Device({ name, detail, host, hardware, busy, computeMs }, ref) {
   return (
     <div className="z-10 flex flex-col items-center gap-2">
       <motion.div
@@ -489,6 +507,15 @@ const Device = forwardRef<
           style={{ color: busy ? "var(--series-1)" : "var(--text-secondary)" }}
         />
         <span className="text-sm font-medium">{name}</span>
+        {host && (
+          <span
+            className="max-w-full truncate text-xs"
+            style={{ color: "var(--text-secondary)" }}
+            title={host}
+          >
+            {host}
+          </span>
+        )}
         <span
           className="tabular text-xs"
           style={{ color: "var(--text-secondary)" }}

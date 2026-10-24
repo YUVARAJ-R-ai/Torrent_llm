@@ -80,6 +80,7 @@ def test_describe_reports_the_whole_chain(served_chain, num_layers):
         f"[0:{num_layers // 2})",
         f"[{num_layers // 2}:{num_layers})",
     ]
+    assert all(r["hostname"] and r["os"] for r in rows)
 
 
 def test_greedy_decode_extends_the_sequence(served_chain, input_ids):

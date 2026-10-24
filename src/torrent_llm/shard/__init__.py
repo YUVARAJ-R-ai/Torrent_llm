@@ -7,7 +7,13 @@ from torrent_llm.shard.plan import (
     plan_weighted,
     validate_plan,
 )
-from torrent_llm.shard.runtime import ShardOutput, ShardRuntime, load_shard, num_layers_of
+from torrent_llm.shard.runtime import (
+    ShardOutput,
+    ShardRuntime,
+    load_shard,
+    num_layers_of,
+    resolve_device,
+)
 
 __all__ = [
     "ShardOutput",
@@ -18,5 +24,6 @@ __all__ = [
     "plan_even",
     "plan_explicit",
     "plan_weighted",
+    "resolve_device",
     "validate_plan",
 ]
