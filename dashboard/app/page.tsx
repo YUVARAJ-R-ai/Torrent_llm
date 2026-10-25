@@ -367,6 +367,13 @@ export default function PoolPage() {
   }, [shown]);
 
   const nowSec = view?.now ?? 0;
+  // Only worth saying when it is a difference: a pool of all-Linux devices does not
+  // need every card to say "Linux".
+  const mixedOs = useMemo(
+    () =>
+      new Set((shown?.members ?? []).map((m) => m.os).filter(Boolean)).size > 1,
+    [shown],
+  );
   const crashAvailable = !!lab && lab.some((d) => d.running);
 
   // "The owner needs the device": bring back one that is away, or send the
@@ -602,6 +609,7 @@ export default function PoolPage() {
                           lab={labByName.get(member.name)}
                           busy={busyKey === key}
                           lost={lost.has(member.name)}
+                          showOs={mixedOs}
                           actions={actionsFor(
                             member,
                             labByName.get(member.name),
@@ -673,6 +681,7 @@ export default function PoolPage() {
                     key={`dev-${member.name}`}
                     layoutId={`dev-${member.name}`}
                     member={member}
+                    showOs={mixedOs}
                     lab={labByName.get(member.name)}
                     actions={actionsFor(member, labByName.get(member.name))}
                   />
