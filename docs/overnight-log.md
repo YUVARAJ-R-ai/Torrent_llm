@@ -54,3 +54,10 @@ What actually happened, newest last. Each checkpoint is a git tag.
     untouched; tests over real gRPC servers fail without the change.
   - **My own numbers were optimistic.** On a 95-question held-out set (up from 30) the
     baseline is 88% and PCA at 4x scores 77%, not the 88% the first 30 easier questions gave.
+- **Checkpoint 5: compression measured honestly.**
+  - Learned projection (1000 steps, 95-question eval): rank 256 no gain (78% vs 78%), rank 128
+    58% vs 52%, rank 64 34% vs 12%. Training helps only where PCA is weakest and does not
+    remove the cliff.
+  - Throttled link (15 Mbps, 100 ms, two real CPU devices): 7.9x fewer bytes, answer 10%
+    faster (2158 ms to 1953 ms). Latency, not bytes, dominates on a hotspot. The default pool
+    stays raw. `docs/compression.md` rewritten with these numbers.

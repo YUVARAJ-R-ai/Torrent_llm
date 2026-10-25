@@ -12,10 +12,10 @@
   "held_out_text": [
     "Frankenstein"
   ],
-  "eval_questions": 24,
+  "eval_questions": 95,
   "baseline": {
     "perplexity": 40.39,
-    "answers_right": 0.958
+    "answers_right": 0.884
   },
   "rows": [
     {
@@ -35,7 +35,7 @@
       "compression": 2.0,
       "relative_error": 0.0214,
       "perplexity": 40.661,
-      "answers_right": 0.917,
+      "answers_right": 0.895,
       "explained_variance": 0.9997
     },
     {
@@ -45,7 +45,7 @@
       "compression": 2.0,
       "relative_error": 0.0265,
       "perplexity": 40.477,
-      "answers_right": 0.917,
+      "answers_right": 0.895,
       "explained_variance": 0.9476
     },
     {
@@ -65,7 +65,7 @@
       "compression": 4.0,
       "relative_error": 0.0356,
       "perplexity": 42.195,
-      "answers_right": 0.875,
+      "answers_right": 0.768,
       "explained_variance": 0.9993
     },
     {
@@ -75,7 +75,7 @@
       "compression": 4.0,
       "relative_error": 0.0492,
       "perplexity": 42.272,
-      "answers_right": 0.875,
+      "answers_right": 0.779,
       "explained_variance": 0.8538
     },
     {
@@ -85,7 +85,7 @@
       "compression": 8.0,
       "relative_error": 0.0356,
       "perplexity": 42.193,
-      "answers_right": 0.875,
+      "answers_right": 0.768,
       "explained_variance": 0.9993
     },
     {
@@ -105,7 +105,7 @@
       "compression": 8.0,
       "relative_error": 0.0486,
       "perplexity": 50.099,
-      "answers_right": 0.792,
+      "answers_right": 0.495,
       "explained_variance": 0.9986
     },
     {
@@ -115,7 +115,7 @@
       "compression": 8.0,
       "relative_error": 0.08,
       "perplexity": 53.263,
-      "answers_right": 0.667,
+      "answers_right": 0.442,
       "explained_variance": 0.7226
     },
     {
@@ -125,7 +125,7 @@
       "compression": 16.0,
       "relative_error": 0.0486,
       "perplexity": 50.096,
-      "answers_right": 0.792,
+      "answers_right": 0.495,
       "explained_variance": 0.9986
     },
     {
@@ -145,7 +145,7 @@
       "compression": 16.0,
       "relative_error": 0.0599,
       "perplexity": 84.709,
-      "answers_right": 0.167,
+      "answers_right": 0.063,
       "explained_variance": 0.9978
     },
     {
@@ -189,5 +189,5 @@
       "explained_variance": 0.4319
     }
   ],
-  "seconds": 168
+  "seconds": 381
 }
