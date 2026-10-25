@@ -199,3 +199,45 @@ def test_the_report_counts_problems_and_says_when_ready():
     assert "Ready to join." in doctor.report([ok])
     text = doctor.report([ok, bad])
     assert "1 problem to fix" in text and "do this" in text
+
+
+# --- the shared codec setting ----------------------------------------------------------------
+
+
+def test_the_compressed_pool_file_finds_its_weights_from_any_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    s = settings(
+        "--pool",
+        str(__import__("pathlib").Path(__file__).parents[1] / "configs/pool-compressed.yaml"),
+    )
+
+    assert s.config.codec == "lowrank"
+    assert s.config.codec_args["weights_path"].endswith("qwen3-0.6b-l14-r256.safetensors")
+    assert __import__("pathlib").Path(s.config.codec_args["weights_path"]).exists()
+
+
+def test_missing_codec_weights_say_what_to_do(tmp_path):
+    pool = tmp_path / "pool.yaml"
+    pool.write_text(
+        "model_id: m\nnum_layers: 4\ncodec:\n  name: lowrank\n"
+        "  weights_path: nope/missing.safetensors\n"
+    )
+
+    with pytest.raises(SystemExit, match="calibrate_codec"):
+        settings("--pool", str(pool))
+
+
+def test_the_default_pool_is_uncompressed():
+    assert settings("--pool", POOL).config.codec == "raw"
+
+
+def test_the_codec_is_part_of_what_names_a_pool():
+    from torrent_llm.pool.config import PoolConfig
+
+    plain = PoolConfig(model_id="m", num_layers=4)
+    squeezed = PoolConfig(model_id="m", num_layers=4, codec="lowrank", codec_args={"rank": 8})
+
+    assert plain.codec_signature == "raw"
+    assert squeezed.codec_signature == "lowrank-r8"
+    assert plain.codec_signature != squeezed.codec_signature

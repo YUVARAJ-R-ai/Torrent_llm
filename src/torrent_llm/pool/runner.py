@@ -58,6 +58,8 @@ class HopInfo:
     member: str
     address: str
     sent_bytes: int
+    #: What ``sent_bytes`` would have been with no compression.
+    uncompressed_bytes: int
     received_bytes: int
     compute_ms: float
     transport_ms: float
@@ -182,6 +184,8 @@ class PoolRunner:
             model_id=self.config.model_id,
             num_layers=self.config.num_layers,
             dtype=self.config.dtype,
+            codec=self.config.codec,
+            codec_args=self.config.codec_args,
             nodes=[NodeConfig(address=r.address, link=link_of(r)) for r in route],
         )
 
@@ -296,6 +300,7 @@ class PoolRunner:
                         member=route[i].member,
                         address=route[i].address,
                         sent_bytes=h.sent_bytes,
+                        uncompressed_bytes=h.sent_uncompressed_bytes,
                         received_bytes=h.received_bytes,
                         compute_ms=h.compute_ns / 1e6,
                         transport_ms=h.transport_ns / 1e6,

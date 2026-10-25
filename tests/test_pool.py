@@ -53,9 +53,17 @@ def wait_for(condition, *, timeout=15.0, what="condition"):
 class Pool:
     """A handful of devices that find each other, with helpers to poke them."""
 
-    def __init__(self, model_factory, num_layers, *, replicas=2, stages=2):
+    def __init__(
+        self, model_factory, num_layers, *, replicas=2, stages=2, codec="raw", codec_args=None
+    ):
         self.config = PoolConfig(
-            model_id="tiny", num_layers=num_layers, stages=stages, replicas=replicas, shard_mb=1000
+            model_id="tiny",
+            num_layers=num_layers,
+            stages=stages,
+            replicas=replicas,
+            shard_mb=1000,
+            codec=codec,
+            codec_args=codec_args or {},
         )
         self._model_factory = model_factory
         self.peers: dict[str, object] = {}
@@ -719,3 +727,143 @@ def test_a_new_device_sums_up_the_pool_once_it_has_settled(pool):
     # and only once
     texts = [e["text"] for e in late.daemon.recent_events() if " is up, with" in e["text"]]
     assert len(texts) == 1
+
+
+# --- compression in the pool's path ---------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_weights(tiny_model, tmp_path):
+    """Calibrated codec weights for the tiny model's layer-3 boundary, written to disk."""
+    from torrent_llm.codec.calibrate import CovarianceAccumulator
+    from torrent_llm.codec.lowrank import LowRankCodec
+    from torrent_llm.eval.boundary import capture_boundary
+
+    acc = CovarianceAccumulator(64)
+    gen = torch.Generator().manual_seed(5)
+    for _ in range(20):
+        acc.add(capture_boundary(tiny_model, 3, torch.randint(0, 256, (1, 24), generator=gen)))
+
+    def make(rank):
+        projection = acc.fit(rank)
+        codec = LowRankCodec(
+            rank=rank,
+            down_proj=projection.down_proj,
+            up_proj=projection.up_proj,
+            mean=projection.mean,
+        )
+        path = tmp_path / f"tiny-r{rank}.safetensors"
+        codec.save_weights(path, hidden_size=64)
+        return str(path)
+
+    return make
+
+
+def test_a_full_rank_calibrated_codec_in_the_pool_changes_no_answer(
+    model_factory, num_layers, tiny_model, tiny_weights
+):
+    pool = Pool(
+        model_factory,
+        num_layers,
+        codec="lowrank",
+        codec_args={"rank": 64, "weights_path": tiny_weights(64)},
+    )
+    try:
+        for name in "abcd":
+            pool.add(name)
+        wait_for(lambda: pool.settled([2, 2]), what="two copies of each stage")
+
+        body = pool.ask("a", max_new_tokens=6).json()
+
+        assert [ord(c) for c in body["completion"]] == [
+            t % 256 for t in reference(tiny_model, "hello", 6)
+        ]
+    finally:
+        pool.close()
+
+
+def test_a_low_rank_codec_really_shrinks_what_crosses_the_wire(
+    model_factory, num_layers, tiny_weights
+):
+    pool = Pool(
+        model_factory,
+        num_layers,
+        codec="lowrank",
+        codec_args={"rank": 16, "weights_path": tiny_weights(16), "wire_dtype": "float16"},
+    )
+    try:
+        for name in "abcd":
+            pool.add(name)
+        wait_for(lambda: pool.settled([2, 2]), what="two copies of each stage")
+
+        body = pool.ask("a", prompt="a longer question to send", max_new_tokens=3).json()
+
+        hidden_hop = body["passes"][0]["hops"][1]  # the hop that carries hidden states
+        # 64 floats of 4 bytes became 16 of 2 bytes: eight times smaller.
+        assert hidden_hop["uncompressed_bytes"] / hidden_hop["sent_bytes"] == pytest.approx(
+            8.0, rel=0.05
+        )
+        assert body["totals"]["uncompressed_bytes"] > body["totals"]["sent_bytes"]
+    finally:
+        pool.close()
+
+
+def test_the_pool_says_which_codec_it_uses(model_factory, num_layers, tiny_weights):
+    pool = Pool(
+        model_factory,
+        num_layers,
+        codec="lowrank",
+        codec_args={"rank": 16, "weights_path": tiny_weights(16), "wire_dtype": "float16"},
+    )
+    try:
+        pool.add("a")
+
+        assert pool.view("a")["pool"]["codec"].startswith("lowrank-r16")
+    finally:
+        pool.close()
+
+
+def test_devices_running_different_pool_settings_refuse_each_other_and_say_why(
+    model_factory, num_layers
+):
+    plain = PoolConfig(model_id="tiny", num_layers=num_layers, stages=2, replicas=1, shard_mb=1000)
+    squeezed = PoolConfig(
+        model_id="tiny",
+        num_layers=num_layers,
+        stages=2,
+        replicas=1,
+        shard_mb=1000,
+        codec="lowrank",
+        codec_args={"rank": 16},
+    )
+    first = launch(
+        plain,
+        DeviceProfile(name="plain", memory_mb=1000, device="cpu"),
+        lambda spec: ShardRuntime(model_factory(), spec),
+        CharTokenizer(),
+        **FAST,
+    )
+    second = launch(
+        squeezed,
+        DeviceProfile(name="squeezed", memory_mb=1000, device="cpu"),
+        lambda spec: ShardRuntime(model_factory(), spec),
+        CharTokenizer(),
+        join=[first.url.removeprefix("http://")],
+        **FAST,
+    )
+    try:
+        wait_for(
+            lambda: any(
+                "different pool settings" in e["text"] for e in second.daemon.recent_events()
+            ),
+            what="the mismatch to be reported",
+        )
+        time.sleep(0.5)
+
+        assert {m["name"] for m in httpx.get(f"{first.url}/pool").json()["members"]} == {"plain"}
+        assert {m["name"] for m in httpx.get(f"{second.url}/pool").json()["members"]} == {
+            "squeezed"
+        }
+    finally:
+        first.close(graceful=False)
+        second.close(graceful=False)

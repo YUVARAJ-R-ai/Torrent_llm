@@ -70,6 +70,7 @@ class OwnerIn(BaseModel):
 class GossipIn(BaseModel):
     sender: str
     members: list[dict[str, Any]]
+    pool_id: str | None = None
 
 
 def create_peer_app(
@@ -131,6 +132,7 @@ def create_peer_app(
                 "num_layers": config.num_layers,
                 "replicas": config.replicas,
                 "shard_mb": config.shard_mb,
+                "codec": config.codec_signature,
                 "stages": [
                     {"stage": s.index, "start": s.start, "end": s.end} for s in config.specs()
                 ],
@@ -149,6 +151,13 @@ def create_peer_app(
 
     @app.post("/gossip", dependencies=[Depends(require_token)])
     def gossip(body: GossipIn) -> dict[str, Any]:
+        # Devices running different settings (model, stages, codec) cannot work
+        # together, and would fail in confusing ways if they tried. Say so now.
+        if body.pool_id is not None and body.pool_id != daemon.pool_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this pool is {daemon.pool_id!r}, not {body.pool_id!r}",
+            )
         mine = daemon.receive(body.sender, [Member.from_dict(m) for m in body.members])
         return {"members": mine}
 
@@ -192,6 +201,7 @@ def create_peer_app(
                 "tokens": len(tokens),
                 "failovers": result.failovers,
                 "sent_bytes": sum(h.sent_bytes for h in hops),
+                "uncompressed_bytes": sum(h.uncompressed_bytes for h in hops),
                 "compute_ms": round(sum(h.compute_ms for h in hops), 2),
                 "transport_ms": round(sum(h.transport_ms for h in hops), 2),
             },

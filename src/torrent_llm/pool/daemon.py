@@ -31,9 +31,10 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from torrent_llm.codec import get_codec
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
 from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
-from torrent_llm.pool.gossip import choose_targets, exchange
+from torrent_llm.pool.gossip import PoolMismatch, choose_targets, exchange
 from torrent_llm.pool.hosting import Loader, ShardHost
 from torrent_llm.pool.members import (
     ACTIVE,
@@ -116,6 +117,7 @@ class PeerDaemon:
             model_id=config.model_id,
             bind=self.bind,
             token=token,
+            codec=get_codec(config.codec, **config.codec_args),
             port_base=shard_port_base,
             clock=clock,
         )
@@ -125,6 +127,7 @@ class PeerDaemon:
         self.discovery: Discovery | None = None
         self._reported_clashes: set[str] = set()
         self._announced = False
+        self._reported_mismatches: set[str] = set()
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
@@ -198,16 +201,24 @@ class PeerDaemon:
     def pool_id(self) -> str:
         """Names the pool, so two groups on one network never mix."""
         c = self.config
-        return f"{c.model_id}/{c.stages}/{c.replicas}"
+        return f"{c.model_id}/{c.stages}/{c.replicas}/{c.codec_signature}"
 
     def _found(self, found: Announcement) -> None:
         """Another device announced itself. If it is new to us, introduce ourselves."""
         known = {(m.host, m.control_port) for m in self.table.members()}
         if (found.host, found.port) in known:
             return
-        theirs = exchange(
-            f"http://{found.address}", self.name, self.table.digest(), token=self.token
-        )
+        try:
+            theirs = exchange(
+                f"http://{found.address}",
+                self.name,
+                self.table.digest(),
+                token=self.token,
+                pool_id=self.pool_id,
+            )
+        except PoolMismatch:
+            self._report_mismatch(f"http://{found.address}", found.name)
+            return
         if theirs is not None:
             self.table.merge(theirs)
             self._record("joined", f"found {found.name} on the network", found.name)
@@ -254,9 +265,25 @@ class PeerDaemon:
     def _gossip(self) -> None:
         digest = self.table.digest()
         for url in choose_targets(self.table, self.join, rng=self._rng):
-            theirs = exchange(url, self.name, digest, token=self.token)
+            try:
+                theirs = exchange(url, self.name, digest, token=self.token, pool_id=self.pool_id)
+            except PoolMismatch:
+                self._report_mismatch(url)
+                continue
             if theirs is not None:
                 self.table.merge(theirs)
+
+    def _report_mismatch(self, url: str, name: str | None = None) -> None:
+        """Say once that another device runs different settings, and so is ignored."""
+        if url in self._reported_mismatches:
+            return
+        self._reported_mismatches.add(url)
+        self._record(
+            "down",
+            f"{name or url} is running different pool settings (model, stages or codec), "
+            "so it was ignored. Everyone must use the same configs/pool.yaml",
+            name,
+        )
 
     def receive(self, sender: str, incoming: list[Member]) -> list[dict]:
         """Another device pushed its table; merge it and answer with mine."""

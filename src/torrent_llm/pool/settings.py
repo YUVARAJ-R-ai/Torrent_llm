@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import socket
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +164,7 @@ def settings_from_args(args: argparse.Namespace) -> PeerSettings:
         )
     raw = yaml.safe_load(pool_file.read_text())
     config = PoolConfig.from_dict(raw)
+    config = _with_resolved_weights(config, pool_file)
 
     base: dict[str, Any] = {}
     if args.profile:
@@ -233,4 +234,25 @@ def settings_from_args(args: argparse.Namespace) -> PeerSettings:
         cors_regex=None if args.cors_origin else PRIVATE_ORIGIN_REGEX,
         memory_source=memory_source,
         notes=notes,
+    )
+
+
+def _with_resolved_weights(config: PoolConfig, pool_file: Path) -> PoolConfig:
+    """Find the codec's weights file wherever the command was run from.
+
+    The pool file names weights relative to the repository (``weights/x.safetensors``).
+    A person may run the command from any directory, so look beside the pool file's
+    repository as well as the current one, and say clearly when it is nowhere.
+    """
+    weights = config.codec_args.get("weights_path")
+    if not weights or Path(weights).is_absolute() or Path(weights).exists():
+        return config
+    for root in (pool_file.resolve().parent.parent, Path(__file__).resolve().parents[3]):
+        candidate = root / weights
+        if candidate.exists():
+            return replace(config, codec_args={**config.codec_args, "weights_path": str(candidate)})
+    raise SystemExit(
+        f"the pool file asks for codec weights {weights!r} but that file was not found.\n"
+        "It ships in the repository's weights/ folder; run from the repository, or "
+        "regenerate it with python scripts/calibrate_codec.py."
     )
