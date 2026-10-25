@@ -58,9 +58,11 @@ class LowRankCodec(Codec):
         rank: Latent bottleneck dimension (e.g., 64, 128, 256).
         seed: Random seed for deterministic weight generation across processes.
         wire_dtype: Optional dtype to cast the latent tensor to before transmission.
-        weights_path: Optional path to a checkpoint containing 'down_proj' and 'up_proj'.
+        weights_path: Optional path to a checkpoint containing 'down_proj' and 'up_proj',
+            and optionally 'mean' (an offset removed before projecting and restored after).
         down_proj: Explicit down-projection matrix ``(hidden_size, rank)``.
         up_proj: Explicit up-projection matrix ``(rank, hidden_size)``.
+        mean: Optional offset ``(hidden_size,)`` removed before projecting, restored after.
     """
 
     def __init__(
@@ -71,6 +73,7 @@ class LowRankCodec(Codec):
         weights_path: str | Path | None = None,
         down_proj: torch.Tensor | None = None,
         up_proj: torch.Tensor | None = None,
+        mean: torch.Tensor | None = None,
     ) -> None:
         self.rank = int(rank)
         if self.rank < 1:
@@ -87,10 +90,16 @@ class LowRankCodec(Codec):
         # Base CPU weights if explicitly passed or loaded from file
         self._base_down_proj: torch.Tensor | None = None
         self._base_up_proj: torch.Tensor | None = None
+        #: Per-dimension offset subtracted before projecting and added back after.
+        #: Calibrated activations carry large near-constant offsets; leaving them in
+        #: would spend the projection's few directions on a number that never changes.
+        self._base_mean: torch.Tensor | None = None
 
         if down_proj is not None and up_proj is not None:
             self._base_down_proj = down_proj.detach().cpu().to(torch.float32)
             self._base_up_proj = up_proj.detach().cpu().to(torch.float32)
+            if mean is not None:
+                self._base_mean = mean.detach().cpu().to(torch.float32)
         elif self.weights_path is not None:
             self._load_weights(self.weights_path)
 
@@ -116,12 +125,17 @@ class LowRankCodec(Codec):
 
         self._base_down_proj = loaded["down_proj"].detach().cpu().to(torch.float32)
         self._base_up_proj = loaded["up_proj"].detach().cpu().to(torch.float32)
+        # Optional, so weight files written before calibration existed still load.
+        if "mean" in loaded:
+            self._base_mean = loaded["mean"].detach().cpu().to(torch.float32)
 
     def save_weights(self, path: str | Path, hidden_size: int) -> None:
         """Save calibrated projection weights to file for deployment."""
         target_path = Path(path)
         w_down, w_up = self._get_projections(hidden_size, torch.device("cpu"), torch.float32)
         state = {"down_proj": w_down, "up_proj": w_up}
+        if self._base_mean is not None:
+            state["mean"] = self._base_mean.contiguous()
         if target_path.suffix == ".safetensors":
             from safetensors.torch import save_file
 
@@ -152,6 +166,19 @@ class LowRankCodec(Codec):
 
         self._weights_cache[cache_key] = (w_down, w_up)
         return w_down, w_up
+
+    def _get_mean(
+        self, hidden_size: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor | None:
+        """The calibrated offset, or ``None`` for an uncalibrated codec."""
+        if self._base_mean is None:
+            return None
+        if self._base_mean.shape[0] != hidden_size:
+            raise ValueError(
+                f"configured mean has {self._base_mean.shape[0]} dimensions but the "
+                f"tensor has hidden_size {hidden_size}"
+            )
+        return self._base_mean.to(device=device, dtype=dtype)
 
     def encode(self, tensor: torch.Tensor, *, request_id: str, hop: int) -> ActivationMessage:
         """Project activation down to latent subspace and serialize to bytes.
@@ -188,7 +215,8 @@ class LowRankCodec(Codec):
         w_down, _ = self._get_projections(hidden_size, tensor.device, tensor.dtype)
 
         # Down-project: (..., hidden) @ (hidden, rank) -> (..., rank)
-        latent = tensor @ w_down
+        mean = self._get_mean(hidden_size, tensor.device, tensor.dtype)
+        latent = (tensor if mean is None else tensor - mean) @ w_down
 
         if self.wire_dtype is not None:
             latent = latent.to(getattr(torch, self.wire_dtype))
@@ -232,6 +260,9 @@ class LowRankCodec(Codec):
 
         # Up-project: (..., rank) @ (rank, hidden) -> (..., hidden)
         reconstructed = latent @ w_up
+        mean = self._get_mean(hidden_size, latent.device, latent.dtype)
+        if mean is not None:
+            reconstructed = reconstructed + mean
 
         if reconstructed.dtype != logical_dtype:
             reconstructed = reconstructed.to(logical_dtype)
@@ -245,4 +276,5 @@ class LowRankCodec(Codec):
             "seed": self.seed,
             "wire_dtype": self.wire_dtype,
             "weights_path": str(self.weights_path) if self.weights_path else None,
+            "calibrated": self._base_mean is not None or self._base_down_proj is not None,
         }
