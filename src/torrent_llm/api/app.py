@@ -33,6 +33,7 @@ from torrent_llm.api.schemas import (
     ShardInfo,
     TopologyResponse,
 )
+from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT, NoChatTemplate, render_chat
 from torrent_llm.profile import HopProfiler, bandwidth_verdict, summarize_by_hop
 from torrent_llm.runner import ChainRunner, TopologyConfig
 from torrent_llm.sampling import GREEDY
@@ -43,10 +44,6 @@ logger = logging.getLogger(__name__)
 #: smallest vocabulary any real tokenizer ships, so profiling never needs to
 #: know the model's vocab size to avoid indexing past its embedding table.
 _PROFILE_TOKEN_CEILING = 100
-
-#: Steers chat mode toward the short, plain answers a live demo wants. Small
-#: models otherwise drift into markdown and long explanations.
-DEFAULT_SYSTEM_PROMPT = "Answer in one short, plain sentence. No markdown."
 
 
 class Tokenizer(Protocol):
@@ -107,7 +104,7 @@ def create_app(
         return ChainRunner(config, profiler=profiler), profiler
 
     def encode_prompt(prompt: str, *, chat: bool = False) -> torch.Tensor:
-        text = render_chat(prompt) if chat else prompt
+        text = render(prompt) if chat else prompt
         ids = tokenizer.encode(text)
         if not ids:
             # An empty prompt gives the first shard a zero-length sequence,
@@ -119,26 +116,11 @@ def create_app(
             )
         return torch.tensor([ids], dtype=torch.long)
 
-    def render_chat(prompt: str) -> str:
-        """Wrap a question in the model's own chat template.
-
-        A chat model given bare text treats it as something to continue, not
-        a question to answer: "Capital of India" comes back as "is located in
-        the state of which country?". The template is what tells it a user
-        asked something and it is now the assistant's turn.
-        """
-        template = getattr(tokenizer, "apply_chat_template", None)
-        if template is None:
-            raise HTTPException(
-                status_code=422, detail="this model's tokenizer has no chat template"
-            )
-        messages = [{"role": "user", "content": prompt}]
-        if system_prompt:
-            messages.insert(0, {"role": "system", "content": system_prompt})
-        # enable_thinking is Qwen3's switch for its reasoning preamble, which
-        # would spend the whole token budget before the answer starts.
-        # Templates that do not use it ignore it.
-        return template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    def render(prompt: str) -> str:
+        try:
+            return render_chat(tokenizer, prompt, system_prompt)
+        except NoChatTemplate as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/topology", response_model=TopologyResponse)
     def topology() -> TopologyResponse:
