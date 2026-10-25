@@ -31,6 +31,8 @@ class ShardInfo(BaseModel):
     device: str
     dtype: str
     model_id: str
+    hostname: str = Field(default="", description="The machine's own name for itself")
+    os: str = Field(default="", description="e.g. 'Linux', 'Windows', 'Darwin'")
 
 
 class LinkInfo(BaseModel):

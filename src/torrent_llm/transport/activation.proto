@@ -77,6 +77,21 @@ message ForwardRequest {
   // quietly incorrect -- the worst possible shape for a failure in a swarm where
   // nodes leaving mid-request is the normal case rather than an edge case.
   optional int32 expected_cache_position = 9;
+
+  // Ask the shard that owns the LM head to pick the next token itself and
+  // reply with its id, not the logits (issue #33). The logits are
+  // batch x seq x vocab -- 593.5 KiB per decode step on Qwen3-0.6B -- and a
+  // generation loop only ever wants one token out of them. Absent means "send
+  // the logits", which perplexity evaluation needs. Ignored by every shard
+  // but the last.
+  optional Sampling sampling = 10;
+}
+
+// How to choose the next token from the final position's logits.
+message Sampling {
+  float temperature = 1;   // 0 = greedy (argmax)
+  int32 top_k = 2;         // 0 = whole vocabulary
+  uint64 seed = 3;         // seeds the draw; vary per step for reproducible sampling
 }
 
 message ForwardReply {
@@ -87,7 +102,9 @@ message ForwardReply {
   // Lets the profiler separate compute cost from network cost, which is the
   // distinction the whole bandwidth argument rests on.
   int64 compute_ns = 4;
-  // True when this shard owned the LM head, so the payload is logits.
+  // True when this shard owned the LM head, so the payload is logits -- or,
+  // when the request carried a Sampling rule, the chosen token ids
+  // (batch x 1, int64), with kind set to PAYLOAD_KIND_TOKEN_IDS.
   bool is_final = 5;
   // Positions this shard's cache holds after serving the request, or 0 when the
   // request did not use a cache. Lets a client notice drift on the reply it
@@ -108,6 +125,10 @@ message InfoReply {
   string device = 8;
   bool is_first = 9;
   bool is_last = 10;
+  // Which machine this is, as it names itself. Lets the runner and dashboard
+  // show that the shards really are on different computers, and on which OS.
+  string hostname = 11;
+  string os = 12;            // e.g. "Linux", "Windows", "Darwin"
 }
 
 service ShardService {

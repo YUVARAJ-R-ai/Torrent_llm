@@ -20,6 +20,11 @@ MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 CHANNEL_OPTIONS = [
     ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
     ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
+    # gRPC honours http_proxy/https_proxy from the environment. On a campus or
+    # corporate laptop those are often set, and a hop to a peer on the same LAN
+    # then goes out to the proxy and fails or stalls. Peers are always dialled
+    # directly.
+    ("grpc.enable_http_proxy", 0),
 ]
 
 SERVER_OPTIONS = [

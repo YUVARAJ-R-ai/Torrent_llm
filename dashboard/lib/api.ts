@@ -23,6 +23,10 @@ export interface ShardInfo {
   device: string;
   dtype: string;
   model_id: string;
+  /** The machine's own name for itself; empty from a shard older than this field. */
+  hostname: string;
+  /** "Linux", "Windows" or "Darwin"; empty from a shard older than this field. */
+  os: string;
 }
 
 /** A simulated link every hop is shaped to; see `torrent_llm.link`. */

@@ -75,6 +75,41 @@ def test_info_describes_what_each_node_hosts(chain, num_layers):
     assert head.model_id == "tiny"
 
 
+def test_info_names_the_machine_and_its_os(chain):
+    import platform
+    import socket
+
+    info = chain[0].info()
+
+    assert info.hostname == socket.gethostname()
+    assert info.os == platform.system()
+
+
+def test_each_served_hop_is_logged_with_its_sender(chain, input_ids, caplog):
+    with caplog.at_level("INFO", logger="torrent_llm.transport.server"):
+        walk(chain, input_ids)
+
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("hop ")]
+    assert len(lines) == 2
+    assert lines[0].startswith("hop 0 from 127.0.0.1: token ids [1x12]")
+    assert "hidden state [1x12x64] float32, 3.0 KiB in" in lines[1]
+    assert lines[1].endswith("-> logits 12.0 KiB out")
+
+
+@pytest.mark.parametrize(
+    ("peer", "host"),
+    [
+        ("ipv4:192.168.1.10:53122", "192.168.1.10"),
+        ("ipv6:[::1]:53122", "::1"),
+        ("unix:/tmp/sock", "unix:/tmp/sock"),
+    ],
+)
+def test_peer_host_strips_the_scheme_and_port(peer, host):
+    from torrent_llm.transport.server import _peer_host
+
+    assert _peer_host(peer) == host
+
+
 def test_hop_reports_the_bytes_it_actually_sent(chain, input_ids):
     hops = walk(chain, input_ids)
 

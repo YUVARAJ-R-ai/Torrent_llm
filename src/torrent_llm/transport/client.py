@@ -17,6 +17,7 @@ import torch
 
 from torrent_llm.codec import Codec, get_codec
 from torrent_llm.link import LinkProfile
+from torrent_llm.sampling import Sampling
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
 from torrent_llm.transport.convert import (
@@ -119,6 +120,7 @@ class ShardClient:
         use_cache: bool = False,
         end_of_request: bool = False,
         expected_cache_position: int | None = None,
+        sampling: Sampling | None = None,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -148,6 +150,12 @@ class ShardClient:
                 returning quietly wrong output. ``None`` skips the check, which
                 is only appropriate when the caller genuinely does not track
                 position -- passing it is strongly preferred.
+            sampling: Ask the shard that owns the LM head to pick the next
+                token itself (issue #33). The reply's ``tensor`` is then the
+                chosen ids, ``(batch, 1)`` int64, instead of the logits -- 8
+                bytes per sequence rather than ``vocab_size x 4``.
+                ``logits_keep_last`` does not apply. Ignored by every other
+                shard.
         """
         request_id = request_id or uuid.uuid4().hex
         t_encode_start = time.perf_counter_ns()
@@ -164,6 +172,13 @@ class ShardClient:
             use_cache=use_cache,
             end_of_request=end_of_request,
             expected_cache_position=expected_cache_position,
+            sampling=(
+                pb.Sampling(
+                    temperature=sampling.temperature, top_k=sampling.top_k, seed=sampling.seed
+                )
+                if sampling is not None
+                else None
+            ),
         )
 
         started = time.perf_counter_ns()

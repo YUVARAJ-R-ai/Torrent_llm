@@ -111,9 +111,19 @@ page the browser happens to load drive the chain.
 
 ## Run across two machines (issue #3)
 
-Copy `configs/lan-2machine.yaml`, replace the addresses with the two machines'
-LAN IPs, and make sure the port is open. Nothing else changes: the shard
-processes and the runner read the same file either way.
+See **[multi-machine.md](multi-machine.md)** for the full walkthrough: network
+choice, per-OS setup (`scripts/setup.sh` / `scripts/setup.ps1`), and the
+cross-platform launcher `scripts/cluster.py`. In short, put both machines'
+addresses in `configs/cluster-2laptop.yaml`, copy it to both, and run:
+
+```bash
+python scripts/cluster.py worker --config configs/cluster-2laptop.yaml --index 1   # machine B
+python scripts/cluster.py head   --config configs/cluster-2laptop.yaml --local 0   # machine A
+```
+
+`torrent-shard --bind 0.0.0.0` listens on every interface instead of only the
+address in the topology, and `device: auto` picks CUDA, then MPS, then CPU, so
+one topology file serves machines with different hardware.
 
 Confirm the layer count matches the model before starting — a mismatch is caught
 at startup, but it is faster to check first:
