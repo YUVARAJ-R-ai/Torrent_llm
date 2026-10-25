@@ -115,6 +115,7 @@ class RecursiveLink:
             self.codec = codec
         elif self.runner is not None and hasattr(self.runner, "config"):
             from torrent_llm.codec import get_codec
+
             self.codec = get_codec(self.runner.config.codec, **self.runner.config.codec_args)
         else:
             self.codec = LowRankCodec(rank=rank)

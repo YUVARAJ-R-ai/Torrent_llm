@@ -103,6 +103,7 @@ class LowRankCodec(Codec):
         if path.suffix == ".safetensors":
             try:
                 from safetensors.torch import load_file
+
                 loaded = load_file(str(path))
             except ImportError:
                 raise ImportError("safetensors is required to load .safetensors weights") from None
@@ -123,6 +124,7 @@ class LowRankCodec(Codec):
         state = {"down_proj": w_down, "up_proj": w_up}
         if target_path.suffix == ".safetensors":
             from safetensors.torch import save_file
+
             save_file(state, str(target_path))
         else:
             torch.save(state, str(target_path))

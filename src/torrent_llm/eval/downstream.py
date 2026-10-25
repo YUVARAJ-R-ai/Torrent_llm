@@ -85,6 +85,7 @@ class SimpleCharTokenizer:
     def encode(self, text: str, return_tensors: str | None = None) -> Any:
         token_ids = [min(ord(c), self.vocab_size - 1) for c in text]
         if return_tensors == "pt":
+
             class _Batch:
                 def __init__(self, ids: list[int]) -> None:
                     self.input_ids = torch.tensor([ids], dtype=torch.long)
@@ -375,14 +376,12 @@ class MMLUEvaluator:
                         cand_tokens.append(min(ord(letter), last_logits.shape[-1] - 1))
 
                     cand_logits = [
-                        last_logits[t].item()
-                        for t in cand_tokens
-                        if 0 <= t < last_logits.shape[-1]
+                        last_logits[t].item() for t in cand_tokens if 0 <= t < last_logits.shape[-1]
                     ]
                     scores[letter] = max(cand_logits) if cand_logits else float("-inf")
 
                 best_choice = max(scores, key=lambda k: scores[k])
-                is_correct = (best_choice == gold)
+                is_correct = best_choice == gold
                 if is_correct:
                     correct += 1
 
@@ -402,7 +401,7 @@ class MMLUEvaluator:
                 new_tokens = generated_ids[0, input_ids.shape[1] :]
                 pred_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 extracted = extract_mmlu_choice(pred_text)
-                is_correct = (extracted == gold)
+                is_correct = extracted == gold
                 if is_correct:
                     correct += 1
 
@@ -457,9 +456,7 @@ def evaluate_downstream(
         if p.exists():
             if p.suffix == ".jsonl":
                 custom_samples = [
-                    json.loads(line)
-                    for line in p.read_text().splitlines()
-                    if line.strip()
+                    json.loads(line) for line in p.read_text().splitlines() if line.strip()
                 ]
             elif p.suffix == ".json":
                 custom_samples = json.loads(p.read_text())

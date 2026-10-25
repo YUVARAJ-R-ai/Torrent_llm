@@ -96,12 +96,8 @@ def format_rate_distortion_table(
     for row in rows:
         ratio_str = f"{row.compression_ratio:>6.1f}x"
         ppl_str = f"{row.perplexity:>10.2f}" if row.perplexity is not None else f"{'N/A':>10}"
-        gsm_str = (
-            f"{row.gsm8k_acc * 100:>9.1f}%" if row.gsm8k_acc is not None else f"{'N/A':>10}"
-        )
-        mmlu_str = (
-            f"{row.mmlu_acc * 100:>9.1f}%" if row.mmlu_acc is not None else f"{'N/A':>10}"
-        )
+        gsm_str = f"{row.gsm8k_acc * 100:>9.1f}%" if row.gsm8k_acc is not None else f"{'N/A':>10}"
+        mmlu_str = f"{row.mmlu_acc * 100:>9.1f}%" if row.mmlu_acc is not None else f"{'N/A':>10}"
 
         if row.speedup is not None:
             if row.rank_label == "raw":

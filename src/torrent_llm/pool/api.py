@@ -52,6 +52,10 @@ class GenerateIn(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0)
     top_k: int = Field(default=0, ge=0)
     seed: int = 0
+    system_prompt: str | None = Field(
+        default=None,
+        description="Replaces the device's default system turn; an empty string sends none",
+    )
 
 
 class OwnerIn(BaseModel):
@@ -149,7 +153,8 @@ def create_peer_app(
         text = body.prompt
         if body.chat:
             try:
-                text = render_chat(tokenizer, body.prompt, system_prompt)
+                chosen = system_prompt if body.system_prompt is None else body.system_prompt
+                text = render_chat(tokenizer, body.prompt, chosen)
             except NoChatTemplate as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         ids = tokenizer.encode(text)

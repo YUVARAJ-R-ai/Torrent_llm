@@ -123,10 +123,7 @@ class PlannerRole(AgentRole):
 
     def format_prompt(self, task: str, context: str | None = None) -> str:
         """Format the planning prompt."""
-        prompt = (
-            f"[SYSTEM]\n{self.system_prompt}\n\n"
-            f"[TASK]\n{task}\n"
-        )
+        prompt = f"[SYSTEM]\n{self.system_prompt}\n\n[TASK]\n{task}\n"
         if context:
             prompt += f"\n[CONTEXT]\n{context}\n"
         prompt += "\n[PLAN]\n"

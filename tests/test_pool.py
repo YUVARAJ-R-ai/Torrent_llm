@@ -174,6 +174,30 @@ def test_the_response_says_which_device_ran_each_stage(pool):
     assert body["totals"]["failovers"] == 0
 
 
+def test_a_request_can_replace_the_system_turn(pool):
+    class TemplateTokenizer(CharTokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            return "".join(f"<{m['role']}>" for m in messages) + "<go>"
+
+    four_devices(pool)
+    from fastapi.testclient import TestClient
+
+    from torrent_llm.pool.api import create_peer_app
+
+    daemon = pool.peers["a"].daemon
+    client = TestClient(
+        create_peer_app(daemon, TemplateTokenizer(), system_prompt="default system")
+    )
+
+    default = client.post("/generate", json={"prompt": "hi", "max_new_tokens": 1}).json()
+    custom = client.post(
+        "/generate", json={"prompt": "hi", "max_new_tokens": 1, "system_prompt": ""}
+    ).json()
+
+    assert default["passes"][0]["seq_len"] == len("<system><user><go>")
+    assert custom["passes"][0]["seq_len"] == len("<user><go>")
+
+
 def test_concurrent_requests_are_spread_across_the_copies(pool):
     four_devices(pool)
     seen: set[str] = set()
