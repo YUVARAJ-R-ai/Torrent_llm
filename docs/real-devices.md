@@ -112,6 +112,21 @@ scripts/join.sh --host tailscale                              # the first laptop
 scripts/join.sh --host tailscale --join 100.101.102.103:9000  # the others, with its Tailscale address
 ```
 
+## Try compression
+
+On a slow link the hidden states crossing between devices are the main cost. A second pool
+file shrinks them 8x using a codec calibrated on real activations, at a cost of a few
+points of answer quality (see [compression.md](compression.md)):
+
+```bash
+scripts/join.sh --pool configs/pool-compressed.yaml
+```
+
+**Every device must use the same pool file.** If one does not, the devices refuse each
+other and the page says why. The page then shows "compressed" in its top bar and how many
+times smaller the traffic was after each answer. To compare, run the same questions with
+and without it.
+
 ## Keeping strangers out
 
 By default anyone on the network can use the pool. To require a shared secret, give every
