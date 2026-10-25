@@ -57,6 +57,8 @@ interface BeamState {
 
 interface Totals {
   betweenDevicesBytes: number;
+  /** The same traffic with no compression. */
+  rawBetweenDevicesBytes: number;
   networkMs: number;
   computeMs: number;
   tokens: number;
@@ -65,6 +67,7 @@ interface Totals {
 
 const ZERO: Totals = {
   betweenDevicesBytes: 0,
+  rawBetweenDevicesBytes: 0,
   networkMs: 0,
   computeMs: 0,
   tokens: 0,
@@ -192,6 +195,9 @@ export default function PoolPage() {
           networkMs: t.networkMs + step.networkMs,
           betweenDevicesBytes:
             t.betweenDevicesBytes + (step.betweenDevices ? step.bytes : 0),
+          rawBetweenDevicesBytes:
+            t.rawBetweenDevicesBytes +
+            (step.betweenDevices ? step.rawBytes : 0),
         }));
       } else if (step.kind === "compute") {
         setBusyKey(placeKey(step.at));
@@ -455,6 +461,8 @@ export default function PoolPage() {
               style={{ color: "var(--text-muted)" }}
             >
               {shown.pool.model_id} ·{" "}
+              {shown.pool.codec !== "raw" &&
+                `compressed (${shown.pool.codec}) · `}
               {shown.members.filter((m) => m.liveness === "alive").length}{" "}
               devices online · talking to {shown.self}
             </span>
@@ -831,6 +839,13 @@ export default function PoolPage() {
                 <Stat
                   label="Sent between devices"
                   value={formatBytes(totals.betweenDevicesBytes)}
+                  note={
+                    totals.betweenDevicesBytes > 0 &&
+                    totals.rawBetweenDevicesBytes / totals.betweenDevicesBytes >
+                      1.05
+                      ? `${(totals.rawBetweenDevicesBytes / totals.betweenDevicesBytes).toFixed(1)}× smaller than uncompressed`
+                      : undefined
+                  }
                 />
                 <Stat
                   label="Time on the network"
@@ -917,10 +932,12 @@ function Stat({
   label,
   value,
   alert,
+  note,
 }: {
   label: string;
   value: string;
   alert?: boolean;
+  note?: string;
 }) {
   return (
     <div
@@ -939,6 +956,14 @@ function Stat({
       >
         {value}
       </div>
+      {note && (
+        <div
+          className="mt-0.5 text-[11px]"
+          style={{ color: "var(--status-good)" }}
+        >
+          {note}
+        </div>
+      )}
     </div>
   );
 }

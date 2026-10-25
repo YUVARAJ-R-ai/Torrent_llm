@@ -31,6 +31,8 @@ export type Step =
       label: string;
       seconds: number;
       bytes: number;
+      /** The same payload with no compression, for saying how much was saved. */
+      rawBytes: number;
       networkMs: number;
       betweenDevices: boolean;
       failed?: boolean;
@@ -89,6 +91,7 @@ export function buildTimeline(result: PoolGenerateResult): Step[] {
           label: "no answer",
           seconds: 0.9,
           bytes: 0,
+          rawBytes: 0,
           networkMs: 0,
           betweenDevices: false,
           failed: true,
@@ -114,6 +117,7 @@ export function buildTimeline(result: PoolGenerateResult): Step[] {
             : formatBytes(hop.sent_bytes),
         seconds: pace(legMs, prefill, "send"),
         bytes: hop.sent_bytes,
+        rawBytes: hop.uncompressed_bytes,
         networkMs: legMs,
         betweenDevices: k > 0,
       });
@@ -133,6 +137,7 @@ export function buildTimeline(result: PoolGenerateResult): Step[] {
       label: "1 token",
       seconds: pace(last.transport_ms / 2, prefill, "send"),
       bytes: last.received_bytes,
+      rawBytes: last.received_bytes,
       networkMs: last.transport_ms / 2,
       betweenDevices: false,
     });

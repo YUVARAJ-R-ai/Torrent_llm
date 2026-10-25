@@ -83,6 +83,8 @@ export interface PoolView {
     num_layers: number;
     replicas: number;
     shard_mb: number;
+    /** "raw" for no compression, otherwise what the codec is (e.g. lowrank-r256). */
+    codec: string;
     stages: PoolStageInfo[];
   };
   members: PoolMember[];
@@ -103,6 +105,8 @@ export interface HopInfo {
   member: string;
   address: string;
   sent_bytes: number;
+  /** What `sent_bytes` would have been with no compression. */
+  uncompressed_bytes: number;
   received_bytes: number;
   compute_ms: number;
   transport_ms: number;
@@ -141,6 +145,7 @@ export interface PoolGenerateResult {
     tokens: number;
     failovers: number;
     sent_bytes: number;
+    uncompressed_bytes: number;
     compute_ms: number;
     transport_ms: number;
   };
