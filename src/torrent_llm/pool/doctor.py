@@ -146,7 +146,28 @@ def check_network(settings: PeerSettings) -> Check:
             "no network address found, so only this machine can reach the device",
             "Connect to Wi-Fi or Ethernet, or pass --host <address>.",
         )
+    if not _is_local_range(settings.host):
+        return Check(
+            "Network address",
+            WARN,
+            f"{settings.host} is not a local-network address, so devices on your Wi-Fi may not "
+            "be able to reach this one. A VPN that carries all traffic often causes this.",
+            "Turn the VPN off for now, or pick the Wi-Fi address with --host <address> "
+            "(ipconfig on Windows, ip addr on Linux, ifconfig on macOS). If you are using "
+            "Tailscale on purpose, ignore this.",
+        )
     return Check("Network address", OK, f"other devices will reach this one at {settings.host}")
+
+
+def _is_local_range(address: str) -> bool:
+    """Whether ``address`` is on a private network or Tailscale, where mates can reach it."""
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return True  # a hostname the person chose; not for us to second-guess
+    return ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
 
 
 def check_ports(settings: PeerSettings) -> Check:

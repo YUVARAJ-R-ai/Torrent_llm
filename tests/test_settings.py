@@ -250,3 +250,19 @@ def test_the_request_limit_can_be_set_and_has_a_default_per_hardware():
     assert default.profile.max_requests is None
     assert default.profile.request_limit(default.resolved_device) == 3  # a CPU
     assert chosen.profile.request_limit("cuda") == 2
+
+
+@pytest.mark.parametrize("address", ["10.0.0.5", "192.168.1.20", "172.20.1.1", "100.101.1.1"])
+def test_local_and_tailscale_addresses_are_fine(monkeypatch, address):
+    monkeypatch.setattr(net, "lan_address", lambda: address)
+
+    assert doctor.check_network(settings("--pool", POOL)).status == doctor.OK
+
+
+def test_a_public_looking_address_is_flagged_as_probably_a_vpn(monkeypatch):
+    monkeypatch.setattr(net, "lan_address", lambda: "34.120.5.9")
+
+    check = doctor.check_network(settings("--pool", POOL))
+
+    assert check.status == doctor.WARN
+    assert "VPN" in check.detail and "--host" in check.fix
