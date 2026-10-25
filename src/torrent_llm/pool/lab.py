@@ -39,6 +39,7 @@ from torrent_llm.pool.config import DeviceProfile, LabConfig
 logger = logging.getLogger(__name__)
 
 BASE_PORT = 9101
+SHARD_PORT_BASE = 9300
 
 
 @dataclass
@@ -47,6 +48,7 @@ class LabDevice:
 
     profile: DeviceProfile
     port: int
+    index: int = 0
     process: subprocess.Popen | None = None
     started_at: float = 0.0
     log_path: Path | None = None
@@ -79,6 +81,13 @@ def peer_command(pool_file: Path, token: str | None, cors: Sequence[str]) -> Com
             device.profile.name,
             "--port",
             str(device.port),
+            # A lab is one machine pretending to be several. It must not announce
+            # itself on the real network, and its devices need ports of their own.
+            "--host",
+            "127.0.0.1",
+            "--no-discover",
+            "--shard-port-base",
+            str(SHARD_PORT_BASE + 10 * device.index),
         ]
         for address in join:
             cmd += ["--join", address]
@@ -108,7 +117,8 @@ class Lab:
         self._threads = threads_per_device
         self._lock = threading.RLock()
         self.devices: dict[str, LabDevice] = {
-            d.name: LabDevice(profile=d, port=BASE_PORT + i) for i, d in enumerate(config.devices)
+            d.name: LabDevice(profile=d, port=BASE_PORT + i, index=i)
+            for i, d in enumerate(config.devices)
         }
         log_dir.mkdir(parents=True, exist_ok=True)
 
