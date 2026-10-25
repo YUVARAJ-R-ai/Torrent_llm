@@ -188,6 +188,7 @@ class ChainRunner:
             result = self._hop(
                 hop,
                 sent,
+                message=result.reply_message,
                 request_id=request_id,
                 position_ids=position_ids,
                 logits_keep_last=logits_keep_last,
