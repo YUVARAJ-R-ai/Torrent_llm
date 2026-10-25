@@ -34,9 +34,14 @@ Three things follow, and they are the point of the project:
 | **Idle devices used** | A device with room offers it. A busy pool spreads questions across every copy, weighted by how fast each device is. |
 | **Owners stay in charge** | An owner can take a device back at any time, by button or automatically when another program takes the GPU. It hands its work over first, then frees its memory. |
 
-> **Heavy.** The lab loads the model once per device, which on a laptop means five
-> copies in memory and the GPU shared. Start with `scripts/pool.sh --start 3`, and
-> close other heavy programs first.
+> **Heavy.** Every simulated device is a full process: about 2 GB of RAM each (0.7 GB
+> for PyTorch itself plus its share of the model; the first stage also carries the
+> 0.6 GB embedding table), and the GPU device uses about 1.6 GB of VRAM. The default
+> five devices need roughly 10 GB of RAM plus the dashboard. On a laptop, start with
+> `scripts/pool.sh --start 3` and close other heavy programs first.
+>
+> To work on the dashboard, use `python scripts/mock_pool.py` instead. It serves the
+> same API from one light process with no model loaded (see below).
 
 ## Using it
 
@@ -178,6 +183,18 @@ Throughput goes up and each answer gets slower, which is what sharing should do.
 When the pool is quiet, everything goes through the fastest device; slower ones take
 work as the fast one's queue grows.
 
+## Working on the dashboard
+
+```bash
+python scripts/mock_pool.py          # same ports and API as the real pool, no model
+cd dashboard && npm run dev          # http://localhost:3000
+```
+
+The mock decides who holds which stage and which copies a request takes with the
+pool's real placement and routing code, and simulates loading, crashes, failover and
+an owner reclaiming a device. Only the timings and the answer text are made up. It is
+for building and demonstrating the page, not for measuring anything.
+
 ## What it does not do
 
 - **Peer-to-peer relay.** Every hop passes through the device that took the question
@@ -199,5 +216,6 @@ work as the fast one's queue grows.
 | `configs/pool-lab.yaml` | the lab's six pretend devices |
 | `scripts/pool.sh` | start the lab and dashboard |
 | `scripts/pool_load.py` | many questions at once |
+| `scripts/mock_pool.py` | the same API with no model, for working on the dashboard |
 | `dashboard/app/pool/` | the Pool page |
 | `tests/test_pool_core.py`, `test_pool.py`, `test_owner.py`, `test_lab.py` | unit tests, whole-pool tests over real sockets |
