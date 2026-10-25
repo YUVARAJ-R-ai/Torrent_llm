@@ -506,7 +506,9 @@ export default function PoolPage() {
                               : "var(--status-critical)",
                       }}
                     >
-                      {list.length} of {wanted} copies
+                      {list.length > wanted
+                        ? `${list.length} copies`
+                        : `${list.length} of ${wanted} copies`}
                     </span>
                   </div>
                   <AnimatePresence mode="popLayout">

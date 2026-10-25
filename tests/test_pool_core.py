@@ -274,6 +274,63 @@ def test_with_too_few_devices_the_pool_covers_what_it_can():
     assert len(wanted["only"]) == 1
 
 
+def settled_pool():
+    """Both stages already on two slow devices, as after a lender left and came back."""
+    return [
+        member("a", speed=1.0, hosting=[ready(0)]),
+        member("b", speed=1.0, hosting=[ready(0)]),
+        member("c", speed=1.0, hosting=[ready(1)]),
+        member("d", speed=1.0, hosting=[ready(1)]),
+    ]
+
+
+def test_a_faster_idle_device_takes_work_from_slower_holders():
+    devices = [*settled_pool(), member("gpu", speed=4.0, slots=2)]
+
+    wanted = wanted_stages(CONFIG, devices)
+
+    assert wanted["gpu"] == [0, 1]
+
+
+def test_a_spare_no_faster_than_the_holders_stays_spare():
+    devices = [*settled_pool(), member("same", speed=1.0), member("slower", speed=0.5)]
+
+    wanted = wanted_stages(CONFIG, devices)
+
+    assert wanted["same"] == [] and wanted["slower"] == []
+
+
+def test_a_spare_only_takes_as_many_extra_copies_as_it_has_room_for():
+    devices = [*settled_pool(), member("gpu", speed=4.0, slots=1)]
+
+    assert len(wanted_stages(CONFIG, devices)["gpu"]) == 1
+
+
+def test_taking_extra_copies_never_makes_anyone_drop_what_they_hold():
+    before = settled_pool()
+    after = [*before, member("gpu", speed=4.0, slots=2)]
+
+    wanted = wanted_stages(CONFIG, after)
+
+    for m in before:
+        assert [h.stage for h in m.hosting] == wanted[m.name]
+
+
+def test_spare_capacity_can_be_switched_off():
+    config = PoolConfig(
+        model_id="tiny", num_layers=6, stages=2, replicas=2, shard_mb=1000, use_spare_capacity=False
+    )
+    devices = [*settled_pool(), member("gpu", speed=4.0, slots=2)]
+
+    assert wanted_stages(config, devices)["gpu"] == []
+
+
+def test_a_draining_fast_device_is_not_given_extra_copies():
+    devices = [*settled_pool(), member("gpu", speed=4.0, slots=2, state=DRAINING)]
+
+    assert wanted_stages(CONFIG, devices)["gpu"] == []
+
+
 def test_coverage_counts_only_usable_copies():
     devices = [
         member("a", hosting=[ready(0)]),

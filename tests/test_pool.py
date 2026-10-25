@@ -430,6 +430,41 @@ def test_a_draining_device_is_not_given_new_work(pool):
         assert busy_device not in used
 
 
+def test_a_fast_device_that_rejoins_takes_work_back(pool):
+    # Slow devices hold everything while the fast one is away.
+    for name in "bcde":
+        pool.add(name)
+    wait_for(lambda: pool.settled([2, 2]), what="two copies of each stage")
+    fast = pool.add("fast", speed=8.0, memory_mb=2000)
+
+    wait_for(
+        lambda: (
+            {h.stage for h in fast.daemon.shards.hosting()} == {0, 1}
+            and all(h.status == "ready" for h in fast.daemon.shards.hosting())
+        ),
+        what="the fast device to take both stages",
+    )
+    # The requester routes by its own view, which gossip brings up to date a beat
+    # after the device itself is ready.
+    wait_for(
+        lambda: (
+            next(m for m in pool.view("b")["members"] if m["name"] == "fast")["hosting"]
+            and all(
+                h["status"] == "ready"
+                for m in pool.view("b")["members"]
+                if m["name"] == "fast"
+                for h in m["hosting"]
+            )
+            and len(next(m for m in pool.view("b")["members"] if m["name"] == "fast")["hosting"])
+            == 2
+        ),
+        what="b to see the fast device ready",
+    )
+    body = pool.ask("b", max_new_tokens=3).json()
+
+    assert {member for _, member in body["passes"][0]["route"]} == {"fast"}
+
+
 def test_a_device_that_gets_its_owner_back_out_of_the_way_rejoins(pool):
     for name in "abcde":
         pool.add(name)

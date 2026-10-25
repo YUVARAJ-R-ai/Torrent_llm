@@ -71,7 +71,43 @@ def wanted_stages(config: PoolConfig, members: Sequence[Member]) -> dict[str, li
             placed = True
             break
         if not placed:
-            return wanted
+            break
+
+    if config.use_spare_capacity:
+        _add_faster_copies(eligible, wanted, free)
+    return wanted
+
+
+def _add_faster_copies(eligible, wanted, free) -> None:
+    """Put spare room to work.
+
+    Once every stage has the copies it needs, a device that still has room and is
+    *faster than the slowest copy of some stage* gains by holding that stage too:
+    requests prefer the fastest copy, so the pool gets quicker and the idle device
+    stops being idle. A device no faster than the current holders would only
+    duplicate what exists, so it stays spare.
+
+    This only ever adds copies. Nothing already held is dropped, so it cannot make
+    the pool churn.
+    """
+    while True:
+        for stage in sorted({s for stages in wanted.values() for s in stages}):
+            holders = [m for m in eligible if stage in wanted[m.name]]
+            slowest = min(m.speed for m in holders)
+            candidates = [
+                m
+                for m in eligible
+                if free(m) > 0
+                and stage not in wanted[m.name]
+                and not _failed_here(m, stage)
+                and m.speed > slowest
+            ]
+            if candidates:
+                best = min(candidates, key=lambda m: (-m.speed, -free(m), m.name))
+                wanted[best.name] = sorted([*wanted[best.name], stage])
+                break
+        else:
+            return
 
 
 def _failed_here(member: Member, stage: int) -> bool:
