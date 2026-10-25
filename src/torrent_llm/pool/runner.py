@@ -168,13 +168,27 @@ class PoolRunner:
                 return self.route(avoid=avoid)
             except NoReplica as exc:
                 if time.monotonic() >= deadline:
-                    raise PoolUnavailable(
-                        f"{exc}, and none came back within {self.patience:.0f}s", stage=exc.stage
-                    ) from exc
+                    raise PoolUnavailable(self._why_unavailable(exc), stage=exc.stage) from exc
                 if not waited:
                     on_wait(exc.stage)
                     waited = True
                 time.sleep(self._poll_s)
+
+    def _why_unavailable(self, exc: NoReplica) -> str:
+        """A message that blames the right thing.
+
+        A device that has found no one else cannot route anything, and "stage 1 has no
+        copy" would send the person looking at the wrong problem: the fault is that this
+        device is not connected to the pool at all.
+        """
+        others = [m for m in self.table.members() if m.name != self.table.me]
+        if not others:
+            return (
+                "this device has not found any other device in the pool. Check that the "
+                "--join address is right and reachable (or that broadcast discovery works on "
+                "this network), and run: torrent-peer --check"
+            )
+        return f"{exc}, and none came back within {self.patience:.0f}s"
 
     def _topology(self, route: list[Replica]) -> TopologyConfig:
         def link_of(r: Replica) -> LinkProfile | None:

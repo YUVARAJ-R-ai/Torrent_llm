@@ -68,9 +68,10 @@ class Pool:
         self._model_factory = model_factory
         self.peers: dict[str, object] = {}
 
-    def add(self, name, *, memory_mb=1000, speed=1.0, link=None, join=True):
+    def add(self, name, *, memory_mb=1000, speed=1.0, link=None, join=True, seed=None):
         spec_loader = lambda spec: ShardRuntime(self._model_factory(), spec)  # noqa: E731
-        seeds = [p.url.removeprefix("http://") for p in self.peers.values()][:1] if join else []
+        first = [seed] if seed is not None else list(self.peers.values())[:1]
+        seeds = [p.url.removeprefix("http://") for p in first] if join else []
         peer = launch(
             self.config,
             DeviceProfile(name=name, memory_mb=memory_mb, speed=speed, link=link, device="cpu"),
@@ -867,3 +868,18 @@ def test_devices_running_different_pool_settings_refuse_each_other_and_say_why(
     finally:
         first.close(graceful=False)
         second.close(graceful=False)
+
+
+def test_a_device_that_found_nobody_says_so_instead_of_blaming_the_pool(model_factory, num_layers):
+    pool = Pool(model_factory, num_layers)
+    try:
+        lonely = pool.add("lonely", join=False)
+        lonely.daemon.runner.patience = 0.5
+
+        response = pool.ask("lonely", max_new_tokens=2)
+
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert "not found any other device" in detail and "--join" in detail
+    finally:
+        pool.close()
