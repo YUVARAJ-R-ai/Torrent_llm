@@ -61,3 +61,11 @@ What actually happened, newest last. Each checkpoint is a git tag.
   - Throttled link (15 Mbps, 100 ms, two real CPU devices): 7.9x fewer bytes, answer 10%
     faster (2158 ms to 1953 ms). Latency, not bytes, dominates on a hotspot. The default pool
     stays raw. `docs/compression.md` rewritten with these numbers.
+- **Checkpoint 6: review of the plan.** All three priorities are done and checkpointed: the
+  real-device flow (join scripts, doctor, discovery, UI served by every device, real-devices.md),
+  compression in the pool path with calibrated weights, and the learned codec, chaos tests,
+  per-device limits and accounting. Phase 7 was judged covered: the pool and details pages
+  already show the codec and bytes saved; the full results table lives in `docs/compression.md`
+  rather than a new page, because a new page could not be checked by eye unattended.
+  Still not done: a real run on three or more machines, Windows and macOS, and the multi-agent
+  run. Nothing is pushed.
