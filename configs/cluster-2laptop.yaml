@@ -1,0 +1,36 @@
+# One model, two laptops: the review rig. Any mix of Windows, Linux and macOS.
+#
+# Laptop A (the "head") hosts layers 0-13 and also runs the API and dashboard.
+# Laptop B (the "worker") hosts layers 14-27 and the LM head. The token ids go
+# into A, the hidden state crosses the real network to B, and the next-token
+# scores come back. See docs/multi-machine.md for the full walkthrough.
+#
+# Replace the two addresses below, then copy this exact file to both laptops:
+#   - Tailscale (recommended): each laptop's 100.x.y.z address from `tailscale ip -4`
+#   - same Wi-Fi / phone hotspot: each laptop's LAN address (ipconfig / ip addr)
+#
+#   worker (B):  python scripts/cluster.py worker --config configs/cluster-2laptop.yaml --index 1
+#   head   (A):  python scripts/cluster.py head   --config configs/cluster-2laptop.yaml --local 0
+#
+# Then open http://localhost:3000 on laptop A.
+#
+# device: auto takes CUDA if the laptop has an NVIDIA GPU, Apple silicon on a
+# Mac, and the CPU otherwise, so this one file works whatever each laptop has.
+# float32 because it is the one dtype every CPU runs at full speed; Qwen3-0.6B
+# is ~1.2 GB per half in float32, which fits any laptop with 8 GB of RAM.
+#
+# If one laptop is clearly stronger, give it more layers (issue #17):
+#   weights: [1.0, 2.0]
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+codec:
+  name: raw
+
+nodes:
+  - address: 100.64.0.1:50051    # laptop A -- replace
+    device: auto
+  - address: 100.64.0.2:50051    # laptop B -- replace
+    device: auto

@@ -59,8 +59,13 @@ of every hop.
 Both "devices" run on one machine. Every hop is shaped to a simulated home link
 (30 ms, 100 Mbps, set in `configs/demo-2device.yaml`) so the network cost is
 visible. The bytes on the wire are real; only the timing is simulated. To use two
-real machines, use `configs/lan-2machine.yaml` instead (see
-[docs/setup.md](docs/setup.md)).
+real machines (any mix of Windows, Linux and macOS), see
+[docs/multi-machine.md](docs/multi-machine.md):
+
+```bash
+python scripts/cluster.py worker --config configs/cluster-2laptop.yaml --index 1   # laptop B
+python scripts/cluster.py head   --config configs/cluster-2laptop.yaml --local 0   # laptop A
+```
 
 The page replays the measured run slowed down so each transfer can be followed.
 The dense testing view is still there at `/details`.

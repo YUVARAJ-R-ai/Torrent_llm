@@ -41,6 +41,7 @@ from torrent_llm.profile import (
     transfer_ms,
 )
 from torrent_llm.runner import ChainRunner, TopologyConfig
+from torrent_llm.sampling import GREEDY
 from torrent_llm.shard import load_shard, num_layers_of
 from torrent_llm.transport import serve
 
@@ -217,7 +218,9 @@ def run_profile_pass(
                 for seq_len in seq_lens:
                     ids = torch.randint(0, PROFILE_TOKEN_CEILING, (1, seq_len))
                     for _ in range(repeats):
-                        runner.forward(ids, logits_keep_last=1)
+                        # Prefill as generation now sends it: the final shard
+                        # replies with the chosen token, not logits (#33).
+                        runner.forward(ids, sampling=GREEDY)
                     print(f"  [{config.codec}] seq_len={seq_len} done", file=sys.stderr)
 
                 if decode_tokens > 0:

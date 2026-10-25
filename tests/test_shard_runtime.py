@@ -8,7 +8,7 @@ measuring shard drift as well as compression loss.
 import pytest
 import torch
 
-from torrent_llm.shard import ShardRuntime, plan_even, plan_explicit
+from torrent_llm.shard import ShardRuntime, plan_even, plan_explicit, resolve_device
 
 
 def run_chain(model_factory, specs, input_ids):
@@ -248,3 +248,22 @@ def test_without_a_cache_every_call_is_still_a_cold_full_recompute(
     out = shard.forward(input_ids=input_ids)
 
     assert out.hidden_states.shape[1] == input_ids.shape[1]
+
+
+def test_auto_device_picks_cuda_when_present(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    assert resolve_device("auto") == "cuda"
+
+
+def test_auto_device_falls_back_to_cpu_without_an_accelerator(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+
+    assert resolve_device("auto") == "cpu"
+
+
+def test_an_explicit_device_is_never_second_guessed(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    assert resolve_device("cpu") == "cpu"

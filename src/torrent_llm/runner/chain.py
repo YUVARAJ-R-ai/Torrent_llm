@@ -17,6 +17,7 @@ import torch
 from torrent_llm.codec import get_codec
 from torrent_llm.profile import HopProfiler
 from torrent_llm.runner.config import TopologyConfig
+from torrent_llm.sampling import GREEDY, Sampling, select_tokens
 from torrent_llm.transport import HopResult, ShardClient
 
 logger = logging.getLogger(__name__)
@@ -24,11 +25,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ChainResult:
-    """Output of one pass through the chain, plus per-hop measurements."""
+    """Output of one pass through the chain, plus per-hop measurements.
 
-    logits: torch.Tensor
+    Exactly one of ``logits`` and ``token_ids`` is set: ``token_ids`` when the
+    pass asked the final shard to choose the next token (issue #33), ``logits``
+    otherwise.
+    """
+
+    logits: torch.Tensor | None
     hops: list[HopResult]
     request_id: str
+    #: ``(batch, 1)`` ids chosen by the final shard, when the pass sampled there.
+    token_ids: torch.Tensor | None = None
 
     @property
     def total_wall_ns(self) -> int:
@@ -75,6 +83,7 @@ class ChainRunner:
         use_cache: bool = False,
         end_of_request: bool = False,
         expected_cache_position: int | None = None,
+        sampling: Sampling | None = None,
     ) -> ChainResult:
         """One full forward pass over the chain.
 
@@ -107,8 +116,13 @@ class ChainRunner:
                 the same value, because they advance in lockstep -- shard 3
                 having processed a different number of positions than shard 0
                 is itself the bug this catches.
+            sampling: Have the final shard pick the next token by this rule and
+                return only its id (issue #33). The result then carries
+                ``token_ids`` instead of ``logits``. Leave it out wherever the
+                logits themselves are the point, as in perplexity evaluation.
         """
         request_id = request_id or uuid.uuid4().hex
+        last = len(self.clients) - 1
         hops: list[HopResult] = []
 
         sent = input_ids
@@ -121,6 +135,7 @@ class ChainRunner:
             use_cache=use_cache,
             end_of_request=end_of_request,
             expected_cache_position=expected_cache_position,
+            sampling=sampling if last == 0 else None,
         )
         hops.append(result)
         self._profile(result, request_id, 0, sent, phase)
@@ -136,6 +151,9 @@ class ChainRunner:
                 use_cache=use_cache,
                 end_of_request=end_of_request,
                 expected_cache_position=expected_cache_position,
+                # Only the shard that owns the LM head reads it, so it rides on
+                # that hop alone.
+                sampling=sampling if hop == last else None,
             )
             hops.append(result)
             self._profile(result, request_id, hop, sent, phase)
@@ -144,6 +162,10 @@ class ChainRunner:
             raise RuntimeError(
                 "chain ended without reaching the shard that owns the LM head; "
                 "the topology is probably missing its tail shard"
+            )
+        if sampling is not None:
+            return ChainResult(
+                logits=None, token_ids=result.tensor, hops=hops, request_id=request_id
             )
         return ChainResult(logits=result.tensor, hops=hops, request_id=request_id)
 
@@ -173,8 +195,10 @@ class ChainRunner:
         max_new_tokens: int = 16,
         use_cache: bool = True,
         stop_token_ids: Collection[int] = (),
+        sampling: Sampling = GREEDY,
+        sample_on_shard: bool = True,
     ) -> tuple[torch.Tensor, list[ChainResult]]:
-        """Greedy decode.
+        """Decode, greedily unless ``sampling`` says otherwise.
 
         With ``use_cache=True`` (the default, issue #24), every shard keeps a
         KV cache for this generation's ``request_id``: the first step sends the
@@ -206,6 +230,13 @@ class ChainRunner:
         ``end_of_request`` (nothing could know yet), so each shard frees that
         session on its TTL sweep. Sending one more pass only to free a few KiB
         of cache would cost a full round trip per request.
+
+        With ``sample_on_shard=True`` (the default, issue #33) the final shard
+        applies ``sampling`` and returns only the chosen token, so the reply on
+        the last hop is 8 bytes instead of ``vocab_size x 4``. ``False`` keeps the
+        original path -- the shard returns the last position's logits and the
+        token is chosen here -- as an explicit control. Both paths make the same
+        choice from the same logits; ``sampling`` is reseeded per step either way.
         """
         request_id = uuid.uuid4().hex
         ids = input_ids
@@ -228,10 +259,17 @@ class ChainRunner:
                 use_cache=use_cache,
                 end_of_request=use_cache and is_last_step,
                 expected_cache_position=cache_position if use_cache else None,
+                sampling=sampling.for_step(step) if sample_on_shard else None,
             )
             passes.append(result)
             cache_position += sent.shape[1]
-            next_token = result.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(ids.device)
+            if sample_on_shard:
+                assert result.token_ids is not None
+                next_token = result.token_ids
+            else:
+                assert result.logits is not None
+                next_token = select_tokens(result.logits, sampling.for_step(step))
+            next_token = next_token.to(ids.device)
             if next_token.item() in stop_token_ids:
                 break
             ids = torch.cat([ids, next_token], dim=1)
@@ -252,6 +290,8 @@ class ChainRunner:
                     "device": info.device,
                     "dtype": info.dtype,
                     "model_id": info.model_id,
+                    "hostname": info.hostname,
+                    "os": info.os,
                 }
             )
         return out

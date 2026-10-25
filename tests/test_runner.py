@@ -5,6 +5,7 @@ import torch
 
 from torrent_llm.codec import get_codec
 from torrent_llm.runner import ChainRunner, TopologyConfig
+from torrent_llm.sampling import GREEDY, Sampling
 from torrent_llm.shard import ShardRuntime
 from torrent_llm.transport import serve
 
@@ -80,6 +81,7 @@ def test_describe_reports_the_whole_chain(served_chain, num_layers):
         f"[0:{num_layers // 2})",
         f"[{num_layers // 2}:{num_layers})",
     ]
+    assert all(r["hostname"] and r["os"] for r in rows)
 
 
 def test_greedy_decode_extends_the_sequence(served_chain, input_ids):
@@ -376,3 +378,36 @@ def test_uncached_generation_does_not_arm_the_position_check(served_chain, input
 
     assert ids.shape == (1, input_ids.shape[1] + 2)
     assert all(hop.cache_length == 0 for result in passes for hop in result.hops)
+
+
+def test_sampling_on_the_shard_returns_a_token_not_logits(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        result = runner.forward(input_ids, sampling=GREEDY)
+        reference = runner.forward(input_ids, logits_keep_last=1)
+
+    assert result.logits is None
+    assert torch.equal(result.token_ids, reference.logits[:, -1, :].argmax(dim=-1, keepdim=True))
+    # One int64 id comes back instead of a vocab-sized row of float32 scores.
+    assert result.hops[-1].received_bytes == 8
+    assert reference.hops[-1].received_bytes > 8 * 100
+
+
+def test_forward_without_a_rule_still_returns_logits(served_chain, input_ids):
+    with ChainRunner(served_chain) as runner:
+        result = runner.forward(input_ids)
+
+    assert result.token_ids is None
+    assert result.logits.shape[:2] == input_ids.shape
+
+
+@pytest.mark.parametrize("seed_rule", [None, 9])
+def test_choosing_on_the_shard_matches_choosing_on_the_client(served_chain, input_ids, seed_rule):
+    rule = GREEDY if seed_rule is None else Sampling(temperature=1.0, seed=seed_rule)
+    with ChainRunner(served_chain) as runner:
+        on_shard, passes = runner.generate(input_ids, max_new_tokens=5, sampling=rule)
+        on_client, _ = runner.generate(
+            input_ids, max_new_tokens=5, sampling=rule, sample_on_shard=False
+        )
+
+    assert torch.equal(on_shard, on_client)
+    assert all(p.hops[-1].received_bytes == 8 for p in passes)
