@@ -9,9 +9,9 @@ import "./globals.css";
  */
 
 export const metadata: Metadata = {
-  title: "Torrent-LLM chain",
+  title: "Torrent-LLM pool",
   description:
-    "Testing and visualization for the layer-sharded inference chain.",
+    "Devices lending what they have to run one model together, and surviving the loss of any of them.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

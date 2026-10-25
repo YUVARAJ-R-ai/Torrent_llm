@@ -280,9 +280,7 @@ class RecursiveMASOrchestrator:
         else:
             final_solution = "No solution generated."
 
-        is_approved = (
-            last_critique_result.approved if last_critique_result is not None else False
-        )
+        is_approved = last_critique_result.approved if last_critique_result is not None else False
 
         return MASRunResult(
             task=task,

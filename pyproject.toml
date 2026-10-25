@@ -42,6 +42,8 @@ dev = [
 torrent-shard = "torrent_llm.cli:shard_main"
 torrent-run = "torrent_llm.cli:run_main"
 torrent-api = "torrent_llm.api.__main__:main"
+torrent-peer = "torrent_llm.pool.peer:main"
+torrent-lab = "torrent_llm.pool.lab:main"
 
 [build-system]
 requires = ["hatchling"]

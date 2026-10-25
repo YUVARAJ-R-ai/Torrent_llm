@@ -1,0 +1,66 @@
+# A pool of pretend laptops on one machine (see torrent_llm/pool/lab.py).
+#
+#   scripts/pool.sh
+#
+# The top half is what every device in a pool agrees on. The devices list is
+# only read by the lab; on real machines each person starts torrent-peer with
+# their own flags and the others learn about them by gossip.
+#
+# The labels are the stories the dashboard tells ("a gaming laptop"). What is
+# real is the `device` line: the first runs on this machine's GPU and the rest on
+# its CPU, so they really do differ in speed. `memory_mb` is how much each owner
+# is willing to lend, and decides how many stages a device may hold.
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+stages: 2        # the model is cut in two...
+replicas: 2      # ...and every half should be on two devices
+shard_mb: 1500   # rough memory one half costs
+
+start: 5         # how many devices to switch on at first; the rest wait
+
+devices:
+  - name: gaming
+    label: Gaming laptop
+    device: cuda
+    memory_mb: 3200      # room for both halves
+    watch_owner: true    # backs off by itself when another program takes the GPU
+    speed: 4.0
+    link: {latency_ms: 8, bandwidth_mbps: 300}
+
+  - name: macbook
+    label: MacBook Air
+    device: cpu
+    memory_mb: 1600
+    speed: 1.5
+    link: {latency_ms: 25, bandwidth_mbps: 100}
+
+  - name: thinkpad
+    label: ThinkPad
+    device: cpu
+    memory_mb: 1600
+    speed: 1.0
+    link: {latency_ms: 30, bandwidth_mbps: 80}
+
+  - name: desktop
+    label: Old desktop
+    device: cpu
+    memory_mb: 1600
+    speed: 0.7
+    link: {latency_ms: 45, bandwidth_mbps: 40}
+
+  - name: hotspot
+    label: Laptop on a phone hotspot
+    device: cpu
+    memory_mb: 1600
+    speed: 1.0
+    link: {latency_ms: 110, bandwidth_mbps: 15}
+
+  - name: spare
+    label: Friend's laptop
+    device: cpu
+    memory_mb: 1600
+    speed: 1.2
+    link: {latency_ms: 35, bandwidth_mbps: 60}

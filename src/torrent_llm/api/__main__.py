@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     from transformers import AutoTokenizer
 
     from torrent_llm.api import create_app
-    from torrent_llm.api.app import DEFAULT_SYSTEM_PROMPT
+    from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT, stop_token_ids
     from torrent_llm.runner import TopologyConfig
 
     config = TopologyConfig.from_file(args.config)
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     app = create_app(
         config,
         tokenizer,
-        stop_token_ids=_stop_token_ids(config.model_id, tokenizer),
+        stop_token_ids=stop_token_ids(config.model_id, tokenizer),
         system_prompt=args.system_prompt or DEFAULT_SYSTEM_PROMPT,
     )
 
@@ -76,30 +76,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"interactive docs at http://{args.host}:{args.port}/docs")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
-
-
-def _stop_token_ids(model_id: str, tokenizer) -> set[int]:
-    """Every id the model treats as "done", from its generation config.
-
-    The tokenizer's ``eos_token_id`` alone is not enough: Qwen3 ends a chat
-    turn with ``<|im_end|>`` but a raw document with ``<|endoftext|>``, and the
-    generation config lists both. Read without loading any weights.
-    """
-    from transformers import GenerationConfig
-
-    ids: set[int] = set()
-    if tokenizer.eos_token_id is not None:
-        ids.add(tokenizer.eos_token_id)
-    try:
-        eos = GenerationConfig.from_pretrained(model_id).eos_token_id
-    except OSError:
-        # No generation config published; the tokenizer's id is the best guess.
-        return ids
-    if isinstance(eos, int):
-        ids.add(eos)
-    elif eos:
-        ids.update(eos)
-    return ids
 
 
 if __name__ == "__main__":
