@@ -6,6 +6,7 @@ machine. The bar is the same as for the local chain: logits must match the
 monolithic model bit-exactly once they have been round-tripped through the wire.
 """
 
+import grpc
 import pytest
 import torch
 
@@ -530,3 +531,54 @@ def test_binding_a_port_that_is_already_serving_fails_loudly():
             serve(make_shard(), get_codec("raw"), host="127.0.0.1", port=port)
     finally:
         first.stop(grace=None)
+
+
+# --- shared-token access control (issue #29) --------------------------------
+
+
+@pytest.fixture
+def guarded_shard(model_factory, num_layers):
+    """A real shard server that only answers callers holding the token."""
+    from torrent_llm.transport.auth import TokenInterceptor
+
+    spec = plan_even(num_layers, 1)[0]
+    server, port = serve(
+        ShardRuntime(model_factory(), spec),
+        get_codec("raw"),
+        host="127.0.0.1",
+        model_id="tiny",
+        interceptors=[TokenInterceptor("s3cret")],
+    )
+    yield f"127.0.0.1:{port}"
+    server.stop(grace=None)
+
+
+def test_a_caller_without_the_token_is_refused(guarded_shard):
+    with (
+        ShardClient(guarded_shard, get_codec("raw")) as client,
+        pytest.raises(grpc.RpcError) as excinfo,
+    ):
+        client.info()
+
+    assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_a_caller_with_the_wrong_token_is_refused(guarded_shard):
+    with (
+        ShardClient(guarded_shard, get_codec("raw"), token="guess") as client,
+        pytest.raises(grpc.RpcError) as excinfo,
+    ):
+        client.info()
+
+    assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_a_caller_with_the_token_is_served(guarded_shard):
+    with ShardClient(guarded_shard, get_codec("raw"), token="s3cret") as client:
+        assert client.info().model_id == "tiny"
+
+
+def test_a_refused_forward_does_no_work(guarded_shard):
+    ids = torch.randint(0, 256, (1, 4))
+    with ShardClient(guarded_shard, get_codec("raw")) as client, pytest.raises(grpc.RpcError):
+        client.forward(ids, is_token_ids=True)

@@ -106,9 +106,14 @@ class PeerDaemon:
             profile.name, suspect_after=suspect_after, down_after=down_after, clock=clock
         )
         self.shards = ShardHost(
-            config.specs(), loader, model_id=config.model_id, bind=self.bind, clock=clock
+            config.specs(),
+            loader,
+            model_id=config.model_id,
+            bind=self.bind,
+            token=token,
+            clock=clock,
         )
-        self.runner = PoolRunner(config, self.table, me=profile.name)
+        self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
         self._heartbeat = 0

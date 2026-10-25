@@ -26,6 +26,7 @@ from torrent_llm.codec import Codec, RawCodec
 from torrent_llm.pool.members import FAILED, LOADING, READY, HostedStage
 from torrent_llm.shard import ShardRuntime, ShardSpec
 from torrent_llm.transport import serve
+from torrent_llm.transport.auth import TokenInterceptor
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,10 @@ class ShardHost:
         model_id: str,
         bind: str = "127.0.0.1",
         codec: Codec | None = None,
+        token: str | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._token = token
         self._specs = specs
         self._loader = loader
         self._model_id = model_id
@@ -220,7 +223,10 @@ class ShardHost:
                 host=self._bind,
                 port=0,
                 model_id=self._model_id,
-                interceptors=[held.counter],
+                interceptors=[
+                    *([TokenInterceptor(self._token)] if self._token else []),
+                    held.counter,
+                ],
             )
         except Exception as exc:  # noqa: BLE001 - a failed load must not kill the device
             logger.exception("loading stage %d failed", held.stage)

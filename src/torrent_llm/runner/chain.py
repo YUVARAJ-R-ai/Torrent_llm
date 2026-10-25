@@ -91,7 +91,13 @@ class ChainResult:
 class ChainRunner:
     """Walks token ids through every shard and returns logits."""
 
-    def __init__(self, config: TopologyConfig, *, profiler: HopProfiler | None = None) -> None:
+    def __init__(
+        self,
+        config: TopologyConfig,
+        *,
+        profiler: HopProfiler | None = None,
+        token: str | None = None,
+    ) -> None:
         self.config = config
         self.profiler = profiler
         self.clients = [
@@ -99,6 +105,7 @@ class ChainRunner:
                 node.address,
                 get_codec(config.codec, **config.codec_args),
                 link=node.link or config.link,
+                token=token,
             )
             for node in config.nodes
         ]

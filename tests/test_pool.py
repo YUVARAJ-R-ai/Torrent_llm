@@ -473,3 +473,49 @@ def test_pool_changes_need_the_shared_token(model_factory, num_layers):
         assert reading.status_code == 200  # looking is open
     finally:
         peer.close(graceful=False)
+
+
+def test_a_pool_with_a_token_refuses_strangers_on_the_shard_ports(model_factory, num_layers):
+    import grpc
+
+    from torrent_llm.codec import get_codec
+    from torrent_llm.transport import ShardClient
+
+    config = PoolConfig(model_id="tiny", num_layers=num_layers, stages=2, replicas=1, shard_mb=1000)
+    peers = []
+    try:
+        for name in ("a", "b"):
+            seeds = [p.url.removeprefix("http://") for p in peers][:1]
+            peers.append(
+                launch(
+                    config,
+                    DeviceProfile(name=name, memory_mb=1000, device="cpu"),
+                    lambda spec: ShardRuntime(model_factory(), spec),
+                    CharTokenizer(),
+                    token="s3cret",
+                    join=seeds,
+                    **FAST,
+                )
+            )
+        wait_for(
+            lambda: httpx.get(f"{peers[0].url}/pool").json()["ready_copies"] == [1, 1],
+            what="the guarded pool to form",
+        )
+
+        # The pool itself works: devices gossip and route with the token.
+        body = httpx.post(
+            f"{peers[0].url}/generate", json={"prompt": "hello", "chat": False, "max_new_tokens": 3}
+        ).json()
+        assert body["totals"]["tokens"] == 3
+
+        # A stranger who finds a shard port gets nothing.
+        port = peers[1].daemon.shards.hosting()[0].port
+        with (
+            ShardClient(f"127.0.0.1:{port}", get_codec("raw")) as stranger,
+            pytest.raises(grpc.RpcError) as excinfo,
+        ):
+            stranger.info()
+        assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
+    finally:
+        for peer in peers:
+            peer.close(graceful=False)

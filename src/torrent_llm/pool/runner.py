@@ -128,7 +128,9 @@ class PoolRunner:
         patience: float = 10.0,
         max_failovers: int = 6,
         poll_s: float = 0.25,
+        token: str | None = None,
     ) -> None:
+        self._token = token
         self.config = config
         self.table = table
         self.me = me
@@ -233,7 +235,7 @@ class PoolRunner:
         avoid: set[str] = set()
         route = self._await_route(avoid, on_wait=lambda s: note("waiting", 0, stage=s))
         self._charge(route, +1)
-        runner = ChainRunner(self._topology(route))
+        runner = ChainRunner(self._topology(route), token=self._token)
 
         request_id = uuid.uuid4().hex
         sent = ids
@@ -278,7 +280,7 @@ class PoolRunner:
                         avoid, on_wait=lambda s, at=step: note("waiting", at, stage=s)
                     )
                     self._charge(route, +1)
-                    runner = ChainRunner(self._topology(route))
+                    runner = ChainRunner(self._topology(route), token=self._token)
                     # The new copies have none of this request's cache: begin
                     # again from the text so far, as a prompt.
                     request_id = uuid.uuid4().hex

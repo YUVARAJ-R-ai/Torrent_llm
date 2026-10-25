@@ -20,6 +20,7 @@ from torrent_llm.link import LinkProfile
 from torrent_llm.sampling import Sampling
 from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import activation_pb2_grpc as pb_grpc
+from torrent_llm.transport.auth import TOKEN_METADATA
 from torrent_llm.transport.convert import (
     CHANNEL_OPTIONS,
     header_to_proto,
@@ -94,6 +95,7 @@ class ShardClient:
         *,
         timeout: float = 300.0,
         link: LinkProfile | None = None,
+        token: str | None = None,
     ) -> None:
         self.address = address
         self.codec = codec
@@ -101,12 +103,14 @@ class ShardClient:
         #: Optional simulated link (see ``torrent_llm.link``). ``None`` means the
         #: real network decides the timing, which on loopback is almost nothing.
         self.link = link
+        #: Shared secret sent with every call, for a pool that requires one.
+        self._metadata = ((TOKEN_METADATA, token),) if token else None
         self.channel = grpc.insecure_channel(address, options=CHANNEL_OPTIONS)
         self.stub = pb_grpc.ShardServiceStub(self.channel)
 
     def info(self) -> pb.InfoReply:
         """Ask the peer what it hosts."""
-        return self.stub.Info(pb.InfoRequest(), timeout=self.timeout)
+        return self.stub.Info(pb.InfoRequest(), timeout=self.timeout, metadata=self._metadata)
 
     def forward(
         self,
@@ -186,7 +190,7 @@ class ShardClient:
             # Inside the timed window on purpose: the shaped delay has to land
             # in transport_ns, where a real link's cost would.
             time.sleep(self.link.one_way_s(message.payload_bytes))
-        reply = self.stub.Forward(request, timeout=self.timeout)
+        reply = self.stub.Forward(request, timeout=self.timeout, metadata=self._metadata)
         if self.link is not None:
             time.sleep(self.link.one_way_s(len(reply.payload)))
         wall_ns = time.perf_counter_ns() - started
