@@ -324,7 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     done = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: done.set())
     signal.signal(signal.SIGTERM, lambda *_: done.set())
-    done.wait()
+    while not done.wait(0.5):
+        pass
     print("switching everything off", flush=True)
     lab.shutdown()
     api.should_exit = True

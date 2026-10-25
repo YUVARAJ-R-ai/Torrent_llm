@@ -15,13 +15,25 @@ $py = Join-Path $venv "Scripts\python.exe"
 $peer = Join-Path $venv "Scripts\torrent-peer.exe"
 $extra = $args
 
+# Ask python whether some code runs cleanly, without a failure being fatal here. With
+# $ErrorActionPreference = "Stop", Windows PowerShell 5.1 turns anything a native program
+# writes to stderr into a terminating error, even when redirected, and these probes are
+# expected to fail on a first run.
+function Test-Python([string]$Code) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $py -c $Code *> $null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch { return $false }
+    finally { $ErrorActionPreference = $previous }
+}
+
 Push-Location $repo
 try {
     $ready = $false
-    if (Test-Path $py) {
-        & $py -c "import torrent_llm" 2>$null
-        $ready = ($LASTEXITCODE -eq 0)
-    }
+    if (Test-Path $py) { $ready = Test-Python "import torrent_llm" }
     if (-not $ready) {
         Write-Host "First time on this machine: setting up. This downloads PyTorch and the model."
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -36,8 +48,10 @@ try {
     }
 
     # The gRPC files are generated, not stored, so a fresh pull needs them once.
-    & $py -c "import torrent_llm.transport.activation_pb2" 2>$null
-    if ($LASTEXITCODE -ne 0) { & $py -m torrent_llm.codegen }
+    if (-not (Test-Python "import torrent_llm.transport.activation_pb2")) {
+        & $py -m torrent_llm.codegen
+        if ($LASTEXITCODE -ne 0) { throw "could not generate the network files" }
+    }
 
     Write-Host ""
     Write-Host "Checking this machine..."

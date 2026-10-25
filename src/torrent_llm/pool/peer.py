@@ -234,7 +234,10 @@ def main(argv: list[str] | None = None) -> int:
     done = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: done.set())
     signal.signal(signal.SIGTERM, lambda *_: done.set())
-    done.wait()
+    # Wait in short slices: on Windows a wait with no timeout cannot be interrupted by
+    # Ctrl+C, which would leave the device impossible to stop from its own terminal.
+    while not done.wait(0.5):
+        pass
     print("Leaving the pool...", flush=True)
     peer.close(graceful=True)
     return 0
