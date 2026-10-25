@@ -105,7 +105,7 @@ The dense testing view is still there at `/details`.
 
 ## Project Status
 
-The layer-sharded pipeline and the device pool are built and measured. The learned compressor and the multi-agent layer exist in the repository but are not yet part of the working system: see the table.
+The layer-sharded pipeline, the device pool and the calibrated compressor are built and measured. The multi-agent layer exists in the repository but is simulated and is not yet a result: see the table.
 
 ### What runs today
 
@@ -128,7 +128,7 @@ torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France
 | Heterogeneous routing weights (#17) | built — layers split proportionally to relative node capability |
 | HTTP layer (#26) | built — `torrent-api`, drives and instruments the chain over HTTP |
 | Dashboard (#27) | built — browser view of a run; a testing tool, not the final interface |
-| Low-rank compressor (#8) | **partly built, not working** — a random orthonormal projection is merged, and it shrinks the wire 8× but breaks the output ("during" for "Paris"). It has not been calibrated or trained, so it is not in the pool's path and no compression result should be quoted from it |
+| Low-rank compressor (#8) | **working, with calibration** — a random projection (what was merged first) destroys the model, but one fitted to real activations gives 4x to 8x smaller hidden-state traffic for a few points of answer quality, verified on two real devices. 16x and beyond degrades sharply. See [docs/compression.md](docs/compression.md) for the table and its limits |
 | Multi-agent roles (#11) | **simulated** — the Planner, Solver and Critic roles are merged, but the latent state passed between them is random numbers and the default run uses scripted text. It is not a result |
 | Peer-to-peer relay (#37), credits (#19) | not started — every hop still passes through the device that took the question |
 

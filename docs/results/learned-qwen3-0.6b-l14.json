@@ -30,6 +30,23 @@
       },
       "steps": 400,
       "weights": "weights/qwen3-0.6b-l14-r128-learned.safetensors"
+    },
+    {
+      "rank": 64,
+      "pca": {
+        "perplexity": 87.525,
+        "answers_right": 0.292,
+        "relative_error": 0.0603,
+        "compression": 32.0
+      },
+      "learned": {
+        "perplexity": 65.63,
+        "answers_right": 0.625,
+        "relative_error": 0.0936,
+        "compression": 32.0
+      },
+      "steps": 400,
+      "weights": "weights/qwen3-0.6b-l14-r64-learned.safetensors"
     }
   ]
 }

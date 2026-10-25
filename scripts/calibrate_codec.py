@@ -107,6 +107,7 @@ FIT_QUESTIONS = (
     ]
 )
 # The expected substring is what must appear in the answer for it to count as right.
+# Ninety questions the fit never sees, so one question is about a point, not three.
 EVAL_QUESTIONS = (
     [
         (f"What is the capital of {c}?", k)
@@ -123,6 +124,24 @@ EVAL_QUESTIONS = (
             ("Netherlands", "Amsterdam"),
             ("Belgium", "Brussels"),
             ("Denmark", "Copenhagen"),
+            ("Switzerland", "Bern"),
+            ("Czech Republic", "Prague"),
+            ("Romania", "Bucharest"),
+            ("Bulgaria", "Sofia"),
+            ("Iran", "Tehran"),
+            ("Iraq", "Baghdad"),
+            ("Israel", "Jerusalem"),
+            ("Saudi Arabia", "Riyadh"),
+            ("Indonesia", "Jakarta"),
+            ("Vietnam", "Hanoi"),
+            ("Philippines", "Manila"),
+            ("South Korea", "Seoul"),
+            ("Nepal", "Kathmandu"),
+            ("Morocco", "Rabat"),
+            ("Ethiopia", "Addis Ababa"),
+            ("Colombia", "Bogota"),
+            ("Venezuela", "Caracas"),
+            ("New Zealand", "Wellington"),
         ]
     ]
     + [
@@ -134,11 +153,76 @@ EVAL_QUESTIONS = (
             ("Ulysses", "Joyce"),
             ("War and Peace", "Tolstoy"),
             ("The Raven", "Poe"),
+            ("Oliver Twist", "Dickens"),
+            ("Jane Eyre", "Bront"),
+            ("Les Miserables", "Hugo"),
+            ("The Great Gatsby", "Fitzgerald"),
+            ("1984", "Orwell"),
+            ("Animal Farm", "Orwell"),
+            ("Crime and Punishment", "Dostoevsky"),
+            ("The Divine Comedy", "Dante"),
+            ("Faust", "Goethe"),
         ]
     ]
     + [
         (f"What is {a} times {b}?", str(a * b))
-        for a, b in [(4, 5), (6, 6), (7, 8), (9, 9), (12, 3), (5, 11)]
+        for a, b in [
+            (4, 5),
+            (6, 6),
+            (7, 8),
+            (9, 9),
+            (12, 3),
+            (5, 11),
+            (8, 8),
+            (7, 6),
+            (9, 4),
+            (12, 12),
+            (3, 14),
+            (6, 9),
+            (11, 11),
+            (13, 2),
+            (15, 3),
+            (8, 7),
+            (5, 5),
+            (14, 4),
+            (9, 8),
+            (10, 7),
+        ]
+    ]
+    + [
+        (q, a)
+        for q, a in [
+            ("What is the largest planet in the solar system?", "Jupiter"),
+            ("What planet is known as the red planet?", "Mars"),
+            ("What is the chemical symbol for gold?", "Au"),
+            ("What is the chemical symbol for water?", "H2O"),
+            ("How many days are in a week?", "seven"),
+            ("How many continents are there?", "seven"),
+            ("What is the freezing point of water in Celsius?", "0"),
+            ("What gas do plants absorb from the air?", "carbon dioxide"),
+            ("What is the closest star to Earth?", "Sun"),
+            ("What is the largest ocean on Earth?", "Pacific"),
+            ("What is the tallest mountain in the world?", "Everest"),
+            ("What is the longest river in Africa?", "Nile"),
+            ("How many sides does a triangle have?", "three"),
+            ("How many legs does a spider have?", "eight"),
+            ("What is the hardest natural substance?", "diamond"),
+            ("What language is spoken in Brazil?", "Portuguese"),
+            ("What language is spoken in Japan?", "Japanese"),
+            ("What currency is used in Japan?", "yen"),
+            ("What is the opposite of hot?", "cold"),
+            ("What color do you get by mixing blue and yellow?", "green"),
+            ("What is the first month of the year?", "January"),
+            ("How many hours are in a day?", "24"),
+            ("Who painted the Mona Lisa?", "Leonardo"),
+            ("Who developed the theory of relativity?", "Einstein"),
+            ("What is the square root of 81?", "9"),
+            ("What is 100 divided by 4?", "25"),
+            ("What is 15 plus 27?", "42"),
+            ("What is 50 minus 18?", "32"),
+            ("What is the capital city of the United Kingdom?", "London"),
+            ("Which ocean lies between Europe and America?", "Atlantic"),
+        ]
     ]
 )
 
