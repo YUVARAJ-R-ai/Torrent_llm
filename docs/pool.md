@@ -4,7 +4,7 @@ Many devices, lending what their owners are willing to lend, serving questions
 together, and staying up when one of them goes away.
 
 ```bash
-scripts/pool.sh          # then open http://localhost:3000/pool
+scripts/pool.sh          # then open http://localhost:3000
 ```
 
 That starts five simulated devices (each its own process, with its own memory
@@ -40,7 +40,7 @@ Three things follow, and they are the point of the project:
 
 ## Using it
 
-Open **Pool** in the dashboard.
+Open the dashboard (the landing page is the pool).
 
 - **Stage columns.** Each card is one device holding one copy of that stage. A
   device with room for two stages appears in both columns.

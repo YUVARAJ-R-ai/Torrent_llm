@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the whole showcase with one command: both shard "devices", the HTTP
-# API, and the dashboard. Ctrl+C stops all of it.
+# API, and the dashboard (the two-device page). Ctrl+C stops all of it.
 #
 #   scripts/demo.sh                          # the two-device demo rig
 #   scripts/demo.sh configs/local-2shard.yaml  # any other topology
@@ -105,6 +105,6 @@ curl -sf -X POST "http://127.0.0.1:$api_port/generate" \
   -d '{"prompt":"Hi","max_new_tokens":2,"chat":true}' >/dev/null || true
 
 echo
-echo "ready: open http://localhost:$web_port"
+echo "ready: open http://localhost:$web_port/two-devices"
 echo "Ctrl+C to stop everything"
 wait

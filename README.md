@@ -47,7 +47,7 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 ## The Pool
 
 ```bash
-scripts/pool.sh          # then open http://localhost:3000/pool
+scripts/pool.sh          # then open http://localhost:3000
 ```
 
 Devices with different hardware join, lend what their owners are willing to lend,
@@ -65,7 +65,7 @@ yet, and [ADR 002](docs/adr/002-leaderless-pool.md) for the design.
 ## The Two-Device Demo
 
 ```bash
-scripts/demo.sh          # then open http://localhost:3000
+scripts/demo.sh          # then open http://localhost:3000/two-devices
 ```
 
 This starts two shard processes that each hold half of Qwen3-0.6B, the HTTP

@@ -1,44 +1,61 @@
 "use client";
 
 /**
- * The showcase view: one language model split across two devices.
+ * The pool: many devices lending what they have, behaving like one.
  *
- * Everything on screen comes from a real run. The prompt goes to the API, the
- * API drives the shard chain, and the per-hop records that come back are
- * replayed here as an animation: tokens into the first device, the hidden
- * state across the link to the second, the chosen token back out, one decode step at a
- * time. Only the pacing is slowed so it can be followed; see lib/replay.ts.
+ * Read left to right. A question comes in, passes through every stage of the
+ * model (a column each), and an answer comes out. Each column holds every device
+ * that has that stage loaded, so a question can go through any one of them. When a
+ * device disappears, the question goes through another and the answer still
+ * arrives. When the pool wants another copy and has a spare device, one slides
+ * across from the bench.
  *
- * The dense testing view this replaced lives at /details.
+ * Everything shown is real: the cards come from the devices' own reports, and the
+ * animation replays the pass and hop records the pool returned for the run.
  */
 
-import { AnimatePresence, motion } from "motion/react";
-import { Laptop, MessageSquare, Play, RotateCcw, Sparkles } from "lucide-react";
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { AnimatePresence, LayoutGroup, motion } from "motion/react";
+import { Play, Sparkles, UserRound, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import AnimatedBeam from "@/components/AnimatedBeam";
 import Nav from "@/components/Nav";
-import { ApiError, api, type GenerateResult, type Topology } from "@/lib/api";
+import Feed from "@/components/pool/Feed";
+import {
+  BenchTile,
+  CopyCard,
+  MissingCopy,
+  stageColor,
+} from "@/components/pool/Cards";
 import { formatBytes, formatMs } from "@/lib/format";
-import { buildTimeline, type Step } from "@/lib/replay";
+import {
+  memberUrl,
+  PoolError,
+  usePool,
+  type LabDevice,
+  type PoolGenerateResult,
+  type PoolMember,
+  type PoolView,
+} from "@/lib/pool";
+import { buildTimeline, placeKey } from "@/lib/poolReplay";
 
-/** A ceiling, not a target: the chain stops as soon as the answer ends. */
-const MAX_NEW_TOKENS = 40;
+type Phase = "idle" | "running" | "playing" | "done";
 
-type Phase = "idle" | "waiting" | "playing" | "done";
+interface BeamState {
+  from: string;
+  to: string;
+  pulse: number;
+  label: string;
+  duration: number;
+  failed: boolean;
+}
 
 interface Totals {
   betweenDevicesBytes: number;
   networkMs: number;
   computeMs: number;
   tokens: number;
+  lost: number;
 }
 
 const ZERO: Totals = {
@@ -46,104 +63,124 @@ const ZERO: Totals = {
   networkMs: 0,
   computeMs: 0,
   tokens: 0,
+  lost: 0,
 };
 
-/** "[0:14)" from the API, shown as "Layers 0–13". */
-/** Distinct machines in the chain, by the names the shards report. */
-function machineCount(topology: Topology): number {
-  const named = topology.shards.map((s) => s.hostname).filter(Boolean);
-  // A shard too old to report its hostname counts as its own machine.
-  return named.length === topology.shards.length
-    ? new Set(named).size
-    : topology.shards.length;
-}
+/** Long enough to run for several seconds, so a device can be lost during it. */
+const CRASH_QUESTION = "Tell me a story about a robot who learns to paint.";
 
-/** "WINDOWS · CUDA:0", or just the device when the OS is not reported. */
-function hardwareLabel(shard: Topology["shards"][number]): string {
-  const os = shard.os === "Darwin" ? "macOS" : shard.os;
-  return (os ? `${os} · ${shard.device}` : shard.device).toUpperCase();
-}
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function layerLabel(range: string): string {
-  const match = /\[(\d+):(\d+)\)/.exec(range);
-  if (!match) return range;
-  return `Layers ${match[1]}–${Number(match[2]) - 1}`;
-}
-
-export default function Demo() {
-  const [topology, setTopology] = useState<Topology | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export default function PoolPage() {
+  const pool = usePool();
+  const { view, lab, events, error } = pool;
 
   const [prompt, setPrompt] = useState("What is the capital of France?");
   const [phase, setPhase] = useState<Phase>("idle");
-  const [result, setResult] = useState<GenerateResult | null>(null);
-  // The question as sent, so editing the box afterwards does not relabel
-  // the answer on screen.
+  const [result, setResult] = useState<PoolGenerateResult | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [asked, setAsked] = useState("");
 
-  // Replay state: which link is lit, which node is busy, what has arrived.
-  const [pulses, setPulses] = useState<number[]>([]);
-  const [labels, setLabels] = useState<string[]>([]);
-  const [durations, setDurations] = useState<number[]>([]);
-  const [busy, setBusy] = useState<number | null>(null);
-  const [lastCompute, setLastCompute] = useState<(number | null)[]>([]);
+  // While a run replays, the stage is frozen as it was when the run began, so a
+  // device that died during the run is still there to be shown dying. It
+  // thaws when the replay ends and the cards then glide to where the pool
+  // actually put things.
+  const [frozen, setFrozen] = useState<PoolView | null>(null);
+  const [beams, setBeams] = useState<Record<string, BeamState>>({});
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [lost, setLost] = useState<Set<string>>(new Set());
   const [tokens, setTokens] = useState<string[]>([]);
   const [totals, setTotals] = useState<Totals>(ZERO);
+  const [note, setNote] = useState<string | null>(null);
   const runId = useRef(0);
+  // The newest view, for timers that outlive a render. Kept in step by an
+  // effect: writing a ref while rendering is not allowed.
+  const viewRef = useRef<PoolView | null>(null);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
 
-  // State is only set once the request settles, never synchronously, so this
-  // is safe to call from an effect.
-  const loadTopology = useCallback(
-    () =>
-      api.topology().then(
-        (t) => {
-          setTopology(t);
-          setError(null);
-        },
-        (e) => {
-          setTopology(null);
-          setError(e instanceof ApiError ? e.message : String(e));
-        },
-      ),
-    [],
+  const shown = frozen ?? view;
+  const labByName = useMemo(
+    () => new Map((lab ?? []).map((d) => [d.name, d])),
+    [lab],
   );
 
-  useEffect(() => {
-    void loadTopology();
-  }, [loadTopology]);
+  // --- where things are on the stage ---------------------------------------
 
-  const numShards = topology?.shards.length ?? 2;
-  const numLinks = numShards + 1;
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [nodes] = useState(() => new NodeRegistry());
+  const refFor = (key: string) => nodes.ref(key);
+  const register = (key: string) => nodes.callback(key);
 
-  function resetStage() {
-    setPulses(Array(numLinks).fill(0));
-    setDurations(Array(numLinks).fill(0.6));
-    setLabels(Array(numLinks).fill(""));
-    setBusy(null);
-    setLastCompute(Array(numShards).fill(null));
+  const layout = useMemo(() => {
+    if (!shown) return null;
+    const copies: {
+      member: PoolMember;
+      hosted: PoolMember["hosting"][number];
+    }[][] = shown.pool.stages.map(() => []);
+    const holding = new Set<string>();
+    for (const member of shown.members) {
+      const usable =
+        member.liveness !== "down" &&
+        (member.state === "active" || member.state === "draining");
+      if (!usable) continue;
+      for (const hosted of member.hosting) {
+        if (hosted.status === "failed") continue;
+        copies[hosted.stage]?.push({ member, hosted });
+        holding.add(member.name);
+      }
+    }
+    const bench = shown.members.filter((m) => !holding.has(m.name));
+    const known = new Set(shown.members.map((m) => m.name));
+    const ghosts = (lab ?? []).filter((d) => !known.has(d.name));
+    return { copies, bench, ghosts };
+  }, [shown, lab]);
+
+  const remeasure = useMemo(
+    () =>
+      shown
+        ? shown.members
+            .map(
+              (m) =>
+                `${m.name}:${m.hosting.map((h) => h.stage).join("")}:${m.liveness}:${m.state}`,
+            )
+            .join("|")
+        : "",
+    [shown],
+  );
+
+  // --- replaying a run ---------------------------------------------------------
+
+  async function play(run: PoolGenerateResult, startView: PoolView) {
+    const id = ++runId.current;
+    setFrozen(startView);
+    setBeams({});
+    setBusyKey(null);
+    setLost(new Set());
     setTokens([]);
     setTotals(ZERO);
-  }
-
-  async function play(run: GenerateResult) {
-    const id = ++runId.current;
-    resetStage();
+    setNote(null);
     setPhase("playing");
 
-    const steps: Step[] = buildTimeline(run, numShards);
-    for (const step of steps) {
-      // A newer run (or a reset) cancels this one between steps.
+    for (const step of buildTimeline(run)) {
+      // A newer run cancels this one between steps.
       if (runId.current !== id) return;
-
       if (step.kind === "send") {
-        setBusy(null);
-        setLabels((prev) =>
-          prev.map((l, i) => (i === step.link ? step.label : l)),
-        );
-        setDurations((prev) =>
-          prev.map((d, i) => (i === step.link ? step.seconds : d)),
-        );
-        setPulses((prev) => prev.map((p, i) => (i === step.link ? p + 1 : p)));
+        const from = placeKey(step.from);
+        const to = placeKey(step.to);
+        setBusyKey(null);
+        setBeams((prev) => ({
+          ...prev,
+          [`${from}>${to}`]: {
+            from,
+            to,
+            pulse: (prev[`${from}>${to}`]?.pulse ?? 0) + 1,
+            label: step.label,
+            duration: step.seconds,
+            failed: !!step.failed,
+          },
+        }));
         setTotals((t) => ({
           ...t,
           networkMs: t.networkMs + step.networkMs,
@@ -151,169 +188,452 @@ export default function Demo() {
             t.betweenDevicesBytes + (step.betweenDevices ? step.bytes : 0),
         }));
       } else if (step.kind === "compute") {
-        setBusy(step.node);
-        setLastCompute((prev) =>
-          prev.map((c, i) => (i === step.node ? step.computeMs : c)),
-        );
+        setBusyKey(placeKey(step.at));
         setTotals((t) => ({ ...t, computeMs: t.computeMs + step.computeMs }));
-      } else {
-        setBusy(null);
+      } else if (step.kind === "token") {
+        setBusyKey(null);
         setTokens((prev) => [...prev, step.text]);
         setTotals((t) => ({ ...t, tokens: t.tokens + 1 }));
+      } else if (step.kind === "lost") {
+        setBusyKey(null);
+        setLost((prev) => new Set(prev).add(step.member));
+        setTotals((t) => ({ ...t, lost: t.lost + 1 }));
+        setNote(
+          `${nameOfIn(startView, step.member)} stopped answering. Finding another copy…`,
+        );
+      } else if (step.kind === "waiting") {
+        setNote(`Waiting for a device to take on stage ${step.stage + 1}…`);
+      } else if (step.kind === "recovered") {
+        setBeams({});
+        setNote(
+          `Carrying on through ${step.route
+            .split(" -> ")
+            .map((m) => nameOfIn(startView, m))
+            .join(" and ")}`,
+        );
       }
-      await new Promise((resolve) => setTimeout(resolve, step.seconds * 1000));
+      await sleep(step.seconds * 1000);
     }
 
     if (runId.current === id) {
-      setBusy(null);
+      setBusyKey(null);
+      setNote(null);
+      setFrozen(null);
+      setLost(new Set());
       setPhase("done");
     }
   }
 
-  async function run() {
-    if (!prompt.trim() || phase === "waiting") return;
+  async function run(withCrash: boolean) {
+    const current = viewRef.current;
+    // A crash needs an answer long enough to still be under way when it
+    // happens, so that run asks its own question rather than the typed one.
+    const question = withCrash ? CRASH_QUESTION : prompt;
+    if (!question.trim() || phase === "running" || !current) return;
     runId.current++;
-    resetStage();
-    setError(null);
-    setAsked(prompt);
-    setPhase("waiting");
+    setRunError(null);
+    setAsked(question);
+    setPhase("running");
+    setBeams({});
+    setTokens([]);
+    setResult(null);
+
+    let via: string | undefined;
+    let victim: PoolMember | undefined;
+    if (withCrash) {
+      // The router prefers the fastest copy, so that is the likeliest to be
+      // carrying the request. Ask a different device to take the question, or
+      // crashing the one in charge would end the request instead of testing it.
+      const holders = current.members
+        .filter(
+          (m) =>
+            m.liveness === "alive" &&
+            m.hosting.some((h) => h.status === "ready"),
+        )
+        .sort((a, b) => b.speed - a.speed);
+      victim = holders[0];
+      const requester =
+        current.members.find(
+          (m) =>
+            m.liveness === "alive" &&
+            m.state === "active" &&
+            m.name !== victim?.name &&
+            m.hosting.length === 0,
+        ) ??
+        current.members.find(
+          (m) => m.liveness === "alive" && m.name !== victim?.name,
+        );
+      if (requester) via = memberUrl(requester);
+    }
+
+    const timer = withCrash
+      ? setTimeout(() => {
+          // Whichever device is busiest right now, other than the requester.
+          const now = viewRef.current;
+          const busiest = now?.members
+            .filter((m) => m.liveness === "alive" && memberUrl(m) !== via)
+            .sort(
+              (a, b) =>
+                b.hosting.reduce((s, h) => s + h.inflight, 0) -
+                a.hosting.reduce((s, h) => s + h.inflight, 0),
+            )[0];
+          const target =
+            busiest && busiest.hosting.some((h) => h.inflight > 0)
+              ? busiest
+              : victim;
+          if (target)
+            void pool.labAction(target.name, "kill").catch(() => undefined);
+        }, 1300)
+      : undefined;
+
     try {
-      const output = await api.generate(prompt, MAX_NEW_TOKENS, true, true);
+      const output = await pool.generate(question, {
+        via,
+        ...(withCrash ? { maxNewTokens: 90, systemPrompt: "" } : {}),
+      });
+      clearTimeout(timer);
       setResult(output);
-      await play(output);
+      await play(output, current);
     } catch (e) {
+      clearTimeout(timer);
       setPhase("idle");
-      setError(e instanceof ApiError ? e.message : String(e));
+      setRunError(
+        e instanceof PoolError || e instanceof Error ? e.message : String(e),
+      );
     }
   }
 
-  // Refs for the beams: prompt, each device, answer.
-  const stageRef = useRef<HTMLDivElement>(null);
-  const promptRef = useRef<HTMLDivElement>(null);
-  const answerRef = useRef<HTMLDivElement>(null);
-  const deviceRefs = useRef<(HTMLDivElement | null)[]>([]);
-  // Stable objects per node, so the beams measure once per layout change and
-  // not on every render. Each reads its element lazily, since the elements
-  // only exist after the first render.
-  const nodeRefs = useMemo(
-    () =>
-      Array.from({ length: numShards + 2 }, (_, index) => ({
-        get current(): HTMLElement | null {
-          if (index === 0) return promptRef.current;
-          if (index === numShards + 1) return answerRef.current;
-          return deviceRefs.current[index - 1] ?? null;
-        },
-      })),
-    [numShards],
-  );
+  // --- the owner's controls ------------------------------------------------------
 
-  const captions = Array.from({ length: numLinks }, (_, i) =>
-    i === 0 ? "prompt" : i === numLinks - 1 ? "next token" : "hidden state",
-  );
+  const actionsFor = (
+    member: PoolMember | null,
+    device: LabDevice | null | undefined,
+  ) => ({
+    onOwner: member
+      ? () => {
+          const away = member.state === "draining" || member.state === "away";
+          void pool
+            .setOwnerBusy(member, !away)
+            .then(pool.refresh, () => undefined);
+        }
+      : undefined,
+    onStop: device
+      ? () =>
+          void pool
+            .labAction(device.name, "stop")
+            .then(pool.refresh, () => undefined)
+      : undefined,
+    onKill: device
+      ? () =>
+          void pool
+            .labAction(device.name, "kill")
+            .then(pool.refresh, () => undefined)
+      : undefined,
+    onStart: device
+      ? () =>
+          void pool
+            .labAction(device.name, "start")
+            .then(pool.refresh, () => undefined)
+      : undefined,
+  });
+
+  const healthText = useMemo(() => {
+    if (!shown) return null;
+    const need = shown.pool.replicas;
+    const thin = shown.ready_copies.findIndex((n) => n < need);
+    if (shown.health === "healthy")
+      return `Every stage is on ${need} devices. Any one can go.`;
+    const missing = shown.ready_copies.findIndex((n) => n === 0);
+    if (missing >= 0)
+      return `No device holds stage ${missing + 1}, so questions cannot be answered.`;
+    return `Stage ${thin + 1} is on one device only. Losing it would stop the pool.`;
+  }, [shown]);
+
+  const nowSec = view?.now ?? 0;
+  const crashAvailable = !!lab && lab.some((d) => d.running);
 
   return (
-    <main className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-10 sm:px-6">
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-8 sm:px-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Torrent-LLM</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            Torrent-LLM pool
+          </h1>
           <p
             className="mt-1 text-sm"
             style={{ color: "var(--text-secondary)" }}
           >
-            One language model, split across two devices.
+            Devices lending what they have, working as one. Any of them can
+            answer.
           </p>
         </div>
         <Nav current="/" />
       </header>
 
-      {/* ---- the stage ---- */}
+      {/* ---- health ---- */}
       <section
-        className="rounded-2xl px-4 pt-6 pb-10 sm:px-8"
+        className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl px-4 py-2.5 text-sm"
         style={{
           background: "var(--surface-1)",
           border: "1px solid var(--border)",
         }}
       >
-        <div className="mb-8 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <span style={{ color: "var(--text-secondary)" }}>
-            {topology ? topology.model_id : "Connecting to the chain…"}
-          </span>
-          {topology && (
-            <span
-              className="tabular rounded-full px-2.5 py-1"
-              style={{
-                background: "var(--page-plane)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {topology.link
-                ? `Simulated network · ${topology.link.bandwidth_mbps} Mbps · ${topology.link.latency_ms} ms`
-                : `Real network · ${machineCount(topology)} ${machineCount(topology) === 1 ? "machine" : "machines"}`}
+        {shown ? (
+          <>
+            <span className="flex items-center gap-2 font-medium">
+              <span
+                className="size-2.5 rounded-full"
+                style={{
+                  background:
+                    shown.health === "healthy"
+                      ? "var(--status-good)"
+                      : shown.health === "degraded"
+                        ? "var(--status-warn)"
+                        : "var(--status-critical)",
+                }}
+              />
+              {shown.health === "healthy"
+                ? "Healthy"
+                : shown.health === "degraded"
+                  ? "Degraded"
+                  : "Down"}
             </span>
-          )}
-        </div>
-
-        <div
-          ref={stageRef}
-          className="relative flex flex-col items-center justify-between gap-20 sm:flex-row sm:gap-6"
-        >
-          <Endpoint
-            ref={promptRef}
-            icon={<MessageSquare size={18} />}
-            title="You"
-          />
-
-          {(topology?.shards ?? [null, null]).map((shard, i) => (
-            <Device
-              key={i}
-              ref={(el) => {
-                deviceRefs.current[i] = el;
-              }}
-              name={`Device ${String.fromCharCode(65 + i)}`}
-              detail={shard ? layerLabel(shard.layers) : "…"}
-              host={shard?.hostname || undefined}
-              hardware={shard ? hardwareLabel(shard) : undefined}
-              busy={busy === i}
-              computeMs={lastCompute[i] ?? null}
-            />
-          ))}
-
-          <Endpoint
-            ref={answerRef}
-            icon={<Sparkles size={18} />}
-            title="Answer"
-          />
-
-          {Array.from({ length: numLinks }, (_, i) => (
-            <AnimatedBeam
-              key={`${i}-${numShards}`}
-              containerRef={stageRef}
-              fromRef={nodeRefs[i]}
-              toRef={nodeRefs[i + 1]}
-              pulse={pulses[i] ?? 0}
-              duration={durations[i] ?? 0.6}
-              label={labels[i]}
-              caption={captions[i]}
-            />
-          ))}
-        </div>
+            <span style={{ color: "var(--text-secondary)" }}>{healthText}</span>
+            <span
+              className="tabular ml-auto text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {shown.pool.model_id} ·{" "}
+              {shown.members.filter((m) => m.liveness === "alive").length}{" "}
+              devices online · talking to {shown.self}
+            </span>
+          </>
+        ) : (
+          <span
+            style={{
+              color: error ? "var(--status-critical)" : "var(--text-secondary)",
+            }}
+          >
+            {error ?? "Looking for the pool…"}
+            {error && (
+              <span
+                className="ml-2 text-xs"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Start it with scripts/pool.sh
+              </span>
+            )}
+          </span>
+        )}
       </section>
 
-      {/* ---- prompt ---- */}
-      {/* autoComplete off stops Firefox restoring the button's disabled state
-          on reload, which made the server and client HTML disagree. */}
+      {/* ---- the stage ---- */}
+      <LayoutGroup>
+        <section
+          className="rounded-2xl px-4 pt-5 pb-5 sm:px-6"
+          style={{
+            background: "var(--surface-1)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <AnimatePresence>
+            {note && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mb-4 rounded-lg px-3 py-2 text-xs"
+                style={{
+                  background: "var(--page-plane)",
+                  border: "1px solid var(--status-warn)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                {note}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div
+            ref={stageRef}
+            className="relative flex flex-col items-stretch gap-10 md:flex-row md:gap-6"
+          >
+            <div className="z-10 flex items-center justify-center md:w-16">
+              <Terminal
+                icon={<UserRound size={18} />}
+                title="You"
+                refCb={register("you")}
+              />
+            </div>
+
+            {layout?.copies.map((list, stage) => {
+              const info = shown!.pool.stages[stage];
+              const wanted = shown!.pool.replicas;
+              const missing = Math.max(0, wanted - list.length);
+              const tone =
+                list.length >= wanted
+                  ? "good"
+                  : list.length >= 1
+                    ? "warn"
+                    : "bad";
+              return (
+                <div
+                  key={stage}
+                  className="z-10 flex min-w-0 flex-1 flex-col gap-2.5"
+                >
+                  <div className="flex items-baseline justify-between gap-2 px-0.5">
+                    <div className="flex items-center gap-2 text-xs font-medium">
+                      <span
+                        className="size-2 rounded-full"
+                        style={{ background: stageColor(stage) }}
+                      />
+                      Stage {stage + 1}
+                      <span
+                        className="tabular font-normal"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        layers {info.start}–{info.end - 1}
+                      </span>
+                    </div>
+                    <span
+                      className="tabular text-[11px]"
+                      style={{
+                        color:
+                          tone === "good"
+                            ? "var(--status-good)"
+                            : tone === "warn"
+                              ? "var(--status-warn)"
+                              : "var(--status-critical)",
+                      }}
+                    >
+                      {list.length > wanted
+                        ? `${list.length} copies`
+                        : `${list.length} of ${wanted} copies`}
+                    </span>
+                  </div>
+                  <AnimatePresence mode="popLayout">
+                    {list.map(({ member, hosted }) => {
+                      const key = `${member.name}#${stage}`;
+                      return (
+                        <CopyCard
+                          key={key}
+                          ref={register(key)}
+                          layoutId={key}
+                          member={member}
+                          stage={stage}
+                          layers={`${info.start}–${info.end - 1}`}
+                          hosted={hosted}
+                          lab={labByName.get(member.name)}
+                          busy={busyKey === key}
+                          lost={lost.has(member.name)}
+                          actions={actionsFor(
+                            member,
+                            labByName.get(member.name),
+                          )}
+                        />
+                      );
+                    })}
+                    {Array.from({ length: missing }, (_, i) => (
+                      <MissingCopy
+                        key={`missing-${stage}-${i}`}
+                        stage={stage}
+                        anyDevices={(layout?.bench ?? []).some(
+                          (m) => m.liveness === "alive" && m.state === "active",
+                        )}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
+
+            <div className="z-10 flex items-center justify-center md:w-16">
+              <Terminal
+                icon={<Sparkles size={18} />}
+                title="Answer"
+                refCb={register("answer")}
+              />
+            </div>
+
+            {Object.entries(beams).map(([id, beam]) => (
+              <AnimatedBeam
+                key={id}
+                containerRef={stageRef}
+                fromRef={refFor(beam.from)}
+                toRef={refFor(beam.to)}
+                fit="edges"
+                remeasureKey={remeasure}
+                pulse={beam.pulse}
+                duration={beam.duration}
+                label={beam.label}
+                gradientStartColor={
+                  beam.failed ? "var(--status-critical)" : "var(--series-1)"
+                }
+                gradientStopColor={
+                  beam.failed ? "var(--status-critical)" : "var(--series-2)"
+                }
+              />
+            ))}
+          </div>
+
+          {/* ---- the bench ---- */}
+          <div
+            className="mt-6 border-t pt-4"
+            style={{ borderColor: "var(--border)" }}
+          >
+            <div className="mb-2.5 flex items-baseline justify-between">
+              <h2 className="text-xs font-medium">Standing by</h2>
+              <span
+                className="text-[11px]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Spare, away, or offline. Hover a device for controls.
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+              <AnimatePresence mode="popLayout">
+                {layout?.bench.map((member) => (
+                  <BenchTile
+                    key={`dev-${member.name}`}
+                    layoutId={`dev-${member.name}`}
+                    member={member}
+                    lab={labByName.get(member.name)}
+                    actions={actionsFor(member, labByName.get(member.name))}
+                  />
+                ))}
+                {layout?.ghosts.map((device) => (
+                  <BenchTile
+                    key={`dev-${device.name}`}
+                    layoutId={`dev-${device.name}`}
+                    member={null}
+                    lab={device}
+                    actions={actionsFor(null, device)}
+                  />
+                ))}
+              </AnimatePresence>
+              {layout && layout.bench.length + layout.ghosts.length === 0 && (
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  Every device is working. Add one to see it take a share.
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      </LayoutGroup>
+
+      {/* ---- ask ---- */}
       <form
         autoComplete="off"
         className="flex flex-col gap-2 sm:flex-row"
         onSubmit={(event) => {
           event.preventDefault();
-          void run();
+          void run(false);
         }}
       >
         <input
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Type a prompt"
+          placeholder="Ask the pool something"
           className="min-w-0 flex-1 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2"
           style={{
             background: "var(--surface-1)",
@@ -323,30 +643,37 @@ export default function Demo() {
         />
         <button
           type="submit"
-          disabled={phase === "waiting" || !topology}
+          disabled={phase === "running" || !view || view.health === "down"}
           className="flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-medium text-white transition-[transform,opacity] active:scale-[0.98] disabled:opacity-50"
           style={{ background: "var(--series-1)" }}
         >
           <Play size={15} />
-          {phase === "waiting" ? "Running…" : "Run"}
+          {phase === "running" ? "Asking…" : "Ask"}
         </button>
-        {phase === "done" && result && (
+        {crashAvailable && (
           <button
             type="button"
-            onClick={() => void play(result)}
-            className="flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm transition-transform active:scale-[0.98]"
+            disabled={
+              phase === "running" ||
+              phase === "playing" ||
+              !view ||
+              view.health === "down"
+            }
+            onClick={() => void run(true)}
+            title="Asks for a long answer, then crashes a device partway through it"
+            className="flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm transition-transform active:scale-[0.98] disabled:opacity-50"
             style={{
-              border: "1px solid var(--border)",
-              color: "var(--text-secondary)",
+              border: "1px solid var(--status-critical)",
+              color: "var(--status-critical)",
             }}
           >
-            <RotateCcw size={15} />
-            Replay
+            <Zap size={15} />
+            Ask, then crash a device
           </button>
         )}
       </form>
 
-      {error && (
+      {runError && (
         <div
           className="rounded-xl px-4 py-3 text-sm"
           style={{
@@ -354,103 +681,123 @@ export default function Demo() {
             color: "var(--status-critical)",
           }}
         >
-          {error}
-          {!topology && (
-            <span
-              className="mt-1 block text-xs"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              Start everything with <code>scripts/demo.sh</code>, then{" "}
-              <button className="underline" onClick={() => void loadTopology()}>
-                retry
-              </button>
-              .
-            </span>
-          )}
+          {runError}
         </div>
       )}
 
-      {/* ---- output ---- */}
-      <section
-        className="min-h-24 rounded-2xl px-5 py-4 text-lg leading-relaxed"
-        style={{
-          background: "var(--surface-1)",
-          border: "1px solid var(--border)",
-        }}
-      >
-        {asked && (
-          <div className="mb-1 text-sm" style={{ color: "var(--text-muted)" }}>
-            {asked}
-          </div>
-        )}
-        {tokens.map((token, i) => (
-          <motion.span
-            key={i}
-            initial={{ opacity: 0, filter: "blur(4px)" }}
-            animate={{ opacity: 1, filter: "blur(0px)" }}
-            transition={{ duration: 0.35 }}
+      <div className="grid gap-5 lg:grid-cols-[1fr_20rem]">
+        <div className="flex flex-col gap-4">
+          <section
+            className="min-h-24 rounded-2xl px-5 py-4 text-lg leading-relaxed"
+            style={{
+              background: "var(--surface-1)",
+              border: "1px solid var(--border)",
+            }}
           >
-            {token}
-          </motion.span>
-        ))}
-        {(phase === "waiting" || phase === "playing") && (
-          <motion.span
-            className="ml-0.5 inline-block h-5 w-0.5 translate-y-1"
-            style={{ background: "var(--series-1)" }}
-            animate={{ opacity: [1, 0, 1] }}
-            transition={{ duration: 1, repeat: Infinity }}
-          />
-        )}
-        {phase === "idle" && !result && (
-          <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-            The answer appears here, one token at a time.
-          </span>
-        )}
-      </section>
+            {asked && (
+              <div
+                className="mb-1 text-sm"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {asked}
+              </div>
+            )}
+            {tokens.map((token, i) => (
+              <motion.span
+                key={i}
+                initial={{ opacity: 0, filter: "blur(4px)" }}
+                animate={{ opacity: 1, filter: "blur(0px)" }}
+                transition={{ duration: 0.35 }}
+              >
+                {token}
+              </motion.span>
+            ))}
+            {(phase === "running" || phase === "playing") && (
+              <motion.span
+                className="ml-0.5 inline-block h-5 w-0.5 translate-y-1"
+                style={{ background: "var(--series-1)" }}
+                animate={{ opacity: [1, 0, 1] }}
+                transition={{ duration: 1, repeat: Infinity }}
+              />
+            )}
+            {phase === "idle" && !result && (
+              <span className="text-sm" style={{ color: "var(--text-muted)" }}>
+                The answer appears here, one token at a time.
+              </span>
+            )}
+          </section>
 
-      {/* ---- numbers ---- */}
-      <AnimatePresence>
-        {phase !== "idle" && (
-          <motion.section
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="grid grid-cols-2 gap-3 sm:grid-cols-4"
-          >
-            <Stat
-              label="Sent between devices"
-              value={formatBytes(totals.betweenDevicesBytes)}
-            />
-            <Stat
-              label="Time on the network"
-              value={formatMs(totals.networkMs)}
-            />
-            <Stat label="Time computing" value={formatMs(totals.computeMs)} />
-            <Stat label="Tokens" value={String(totals.tokens)} />
-          </motion.section>
-        )}
-      </AnimatePresence>
+          <AnimatePresence>
+            {phase !== "idle" && phase !== "running" && (
+              <motion.section
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="grid grid-cols-2 gap-3 sm:grid-cols-5"
+              >
+                <Stat
+                  label="Sent between devices"
+                  value={formatBytes(totals.betweenDevicesBytes)}
+                />
+                <Stat
+                  label="Time on the network"
+                  value={formatMs(totals.networkMs)}
+                />
+                <Stat
+                  label="Time computing"
+                  value={formatMs(totals.computeMs)}
+                />
+                <Stat label="Tokens" value={String(totals.tokens)} />
+                <Stat
+                  label="Devices lost"
+                  value={String(totals.lost)}
+                  alert={totals.lost > 0}
+                />
+              </motion.section>
+            )}
+          </AnimatePresence>
+          {phase === "playing" && (
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Replaying the measured run, slowed down so each transfer is
+              visible.
+            </p>
+          )}
+        </div>
 
-      {phase === "playing" && (
-        <p
-          className="text-center text-xs"
-          style={{ color: "var(--text-muted)" }}
+        <section
+          className="rounded-2xl px-4 py-3.5"
+          style={{
+            background: "var(--surface-1)",
+            border: "1px solid var(--border)",
+          }}
         >
-          Replaying the measured run, slowed down so each transfer is visible.
-        </p>
-      )}
+          <h2 className="mb-2.5 text-xs font-medium">
+            What the pool has been doing
+          </h2>
+          <Feed events={events} now={nowSec} />
+        </section>
+      </div>
     </main>
   );
 }
 
-const Endpoint = forwardRef<
-  HTMLDivElement,
-  { icon: React.ReactNode; title: string }
->(function Endpoint({ icon, title }, ref) {
+function nameOfIn(view: PoolView, member: string): string {
+  return view.members.find((m) => m.name === member)?.label || member;
+}
+
+function Terminal({
+  icon,
+  title,
+  refCb,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  refCb: (el: HTMLElement | null) => void;
+}) {
   return (
-    <div className="z-10 flex flex-col items-center gap-2">
+    <div className="flex flex-row items-center gap-2 md:flex-col">
       <div
-        ref={ref}
+        ref={refCb}
         className="flex size-12 items-center justify-center rounded-full"
         style={{
           background: "var(--page-plane)",
@@ -465,96 +812,74 @@ const Endpoint = forwardRef<
       </span>
     </div>
   );
-});
+}
 
-const Device = forwardRef<
-  HTMLDivElement,
-  {
-    name: string;
-    detail: string;
-    host?: string;
-    hardware?: string;
-    busy: boolean;
-    computeMs: number | null;
-  }
->(function Device({ name, detail, host, hardware, busy, computeMs }, ref) {
-  return (
-    <div className="z-10 flex flex-col items-center gap-2">
-      <motion.div
-        ref={ref}
-        className="relative flex w-36 flex-col items-center gap-1.5 rounded-2xl px-4 py-4"
-        // The ring is a CSS transition rather than a motion value: motion
-        // cannot interpolate a shadow whose colour is a CSS variable.
-        style={{
-          background: "var(--page-plane)",
-          border: "1px solid var(--border)",
-          boxShadow: busy
-            ? "0 0 0 2px var(--series-1), 0 12px 32px -10px var(--series-1)"
-            : "0 0 0 0 transparent, 0 0 0 0 transparent",
-          transition: "box-shadow 180ms ease-out",
-        }}
-        animate={{ scale: busy ? 1.05 : 1 }}
-        transition={{ type: "spring", stiffness: 300, damping: 22 }}
-      >
-        <Laptop
-          size={22}
-          style={{ color: busy ? "var(--series-1)" : "var(--text-secondary)" }}
-        />
-        <span className="text-sm font-medium">{name}</span>
-        {host && (
-          <span
-            className="max-w-full truncate text-xs"
-            style={{ color: "var(--text-secondary)" }}
-            title={host}
-          >
-            {host}
-          </span>
-        )}
-        <span
-          className="tabular text-xs"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          {detail}
-        </span>
-        {hardware && (
-          <span
-            className="rounded px-1.5 py-0.5 text-[10px] tracking-wide"
-            style={{
-              background: "var(--surface-1)",
-              color: "var(--text-muted)",
-            }}
-          >
-            {hardware}
-          </span>
-        )}
-      </motion.div>
-      <span
-        className="tabular h-4 text-xs"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {busy
-          ? "computing…"
-          : computeMs !== null
-            ? `${formatMs(computeMs)} compute`
-            : ""}
-      </span>
-    </div>
-  );
-});
-
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  alert,
+}: {
+  label: string;
+  value: string;
+  alert?: boolean;
+}) {
   return (
     <div
       className="rounded-xl px-4 py-3"
       style={{
         background: "var(--surface-1)",
-        border: "1px solid var(--border)",
+        border: `1px solid ${alert ? "var(--status-critical)" : "var(--border)"}`,
       }}
     >
       <div className="text-xs" style={{ color: "var(--text-muted)" }}>
         {label}
       </div>
-      <div className="tabular mt-1 text-lg font-semibold">{value}</div>
+      <div
+        className="tabular mt-1 text-lg font-semibold"
+        style={{ color: alert ? "var(--status-critical)" : undefined }}
+      >
+        {value}
+      </div>
     </div>
   );
+}
+
+/**
+ * Where each element of the stage is, looked up by name.
+ *
+ * Beams need a reference to the elements they join, and those elements come and
+ * go as devices move. This keeps one stable reference per name that always
+ * points at whatever element currently has it, so a beam need not be rebuilt
+ * when a card is replaced.
+ */
+class NodeRegistry {
+  private els = new Map<string, HTMLElement>();
+  private refs = new Map<string, RefObject<HTMLElement | null>>();
+  private callbacks = new Map<string, (el: HTMLElement | null) => void>();
+
+  ref(key: string): RefObject<HTMLElement | null> {
+    let ref = this.refs.get(key);
+    if (!ref) {
+      const els = this.els;
+      ref = {
+        get current() {
+          return els.get(key) ?? null;
+        },
+      } as RefObject<HTMLElement | null>;
+      this.refs.set(key, ref);
+    }
+    return ref;
+  }
+
+  callback(key: string): (el: HTMLElement | null) => void {
+    let cb = this.callbacks.get(key);
+    if (!cb) {
+      cb = (el) => {
+        if (el) this.els.set(key, el);
+        else this.els.delete(key);
+      };
+      this.callbacks.set(key, cb);
+    }
+    return cb;
+  }
 }

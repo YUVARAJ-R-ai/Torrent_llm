@@ -1,8 +1,8 @@
 import Link from "next/link";
 
 const PAGES = [
-  { href: "/pool", label: "Pool" },
-  { href: "/", label: "Two devices" },
+  { href: "/", label: "Pool" },
+  { href: "/two-devices", label: "Two devices" },
   { href: "/details", label: "Details" },
 ];
 

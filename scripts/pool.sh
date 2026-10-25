@@ -7,7 +7,7 @@
 #   scripts/pool.sh --start 4             # fewer devices at first
 #   scripts/pool.sh --pool my-pool.yaml   # another pool
 #
-# Open http://localhost:3000/pool when it says ready. The lab's own API is on
+# Open http://localhost:3000 when it says ready. The lab's own API is on
 # :8100 and each device's HTTP port is 9101 and up.
 #
 # Expects the Python package installed (see docs/setup.md). If `torrent-lab` is
@@ -92,7 +92,7 @@ done
 echo "starting the dashboard on :$web_port  (log: $logs/web.log)"
 (cd dashboard && exec npx next dev --port "$web_port" >"$logs/web.log" 2>&1) &
 pids+=("$!")
-until curl -sf -o /dev/null "http://127.0.0.1:$web_port/pool"; do sleep 1; done
+until curl -sf -o /dev/null "http://127.0.0.1:$web_port/"; do sleep 1; done
 
 # Every device loads its share in the background. Wait until each stage has
 # its copies, so the first thing on screen is a working pool, not a loading one.
@@ -104,6 +104,6 @@ for _ in $(seq 120); do
 done
 
 echo
-echo "ready: open http://localhost:$web_port/pool"
+echo "ready: open http://localhost:$web_port"
 echo "Ctrl+C to stop everything"
 wait
