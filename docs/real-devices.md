@@ -49,6 +49,19 @@ itself, so you can open *any* device's address and see the same pool.
 As the others run `join.sh`, they appear on the page within a few seconds. You do
 nothing.
 
+## Check it works
+
+Once everyone has joined, run this from any laptop (it does not need to be in the pool):
+
+```bash
+python scripts/pool_check.py http://192.168.1.20:9000      # any device's address
+```
+
+It asks every device the same question, checks they all give the same right answer, shows
+the route each took and how long it took, and asks five questions at once. It prints `FAIL`
+lines for anything wrong and exits non-zero. If it passes, the pool works across your
+machines.
+
 ## Things to try
 
 | Do this | What you should see |
