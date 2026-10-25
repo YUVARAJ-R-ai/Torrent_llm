@@ -704,3 +704,18 @@ def test_only_pages_from_private_networks_may_call_a_device(model_factory, num_l
         assert "access-control-allow-origin" not in web.headers
     finally:
         peer.close(graceful=False)
+
+
+def test_a_new_device_sums_up_the_pool_once_it_has_settled(pool):
+    four_devices(pool)
+    late = pool.add("late")
+    late.daemon.warmup_s = 0.5
+    late.daemon._started = __import__("time").monotonic()
+
+    wait_for(
+        lambda: any(" is up, with 5 devices" in e["text"] for e in late.daemon.recent_events()),
+        what="the settled device to say what it found",
+    )
+    # and only once
+    texts = [e["text"] for e in late.daemon.recent_events() if " is up, with" in e["text"]]
+    assert len(texts) == 1

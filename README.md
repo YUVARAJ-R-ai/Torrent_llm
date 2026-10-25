@@ -44,6 +44,19 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 
 ---
 
+## Try it on real devices
+
+Several laptops, each running one command, working as one pool. No addresses, no setup
+files, no Node:
+
+```bash
+git clone https://github.com/YUVARAJ-R-ai/Torrent_llm.git && cd Torrent_llm
+scripts/join.sh            # Windows: powershell -ExecutionPolicy Bypass -File scripts\join.ps1
+```
+
+It installs what is needed the first time, checks the machine, and prints a web address.
+Open it on any laptop to see and use the pool. See [docs/real-devices.md](docs/real-devices.md).
+
 ## The Pool
 
 ```bash

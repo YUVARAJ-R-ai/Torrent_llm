@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import AnimatedBeam from "@/components/AnimatedBeam";
 import Nav from "@/components/Nav";
+import AddDevice from "@/components/pool/AddDevice";
 import Explainer from "@/components/pool/Explainer";
 import Feed from "@/components/pool/Feed";
 import Journey from "@/components/pool/Journey";
@@ -34,6 +35,7 @@ import { formatBytes, formatMs } from "@/lib/format";
 import {
   memberUrl,
   PoolError,
+  SAME_ORIGIN,
   usePool,
   type LabDevice,
   type PoolGenerateResult,
@@ -682,6 +684,11 @@ export default function PoolPage() {
                 </p>
               )}
             </div>
+            {SAME_ORIGIN && (
+              <div className="mt-3">
+                <AddDevice />
+              </div>
+            )}
           </div>
         </section>
       </LayoutGroup>

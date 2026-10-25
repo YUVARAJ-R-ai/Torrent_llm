@@ -124,6 +124,7 @@ class PeerDaemon:
         self.discovery_port = discovery_port
         self.discovery: Discovery | None = None
         self._reported_clashes: set[str] = set()
+        self._announced = False
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
@@ -341,8 +342,6 @@ class PeerDaemon:
             stages = tuple(sorted((h.stage, h.status) for h in member.hosting))
             now[member.name] = (liveness, member.state, stages)
 
-        if self._clock() - self._started < self.warmup_s:
-            self._previous = now
         for address in sorted(self.table.name_clashes - self._reported_clashes):
             self._reported_clashes.add(address)
             self._record(
@@ -351,7 +350,22 @@ class PeerDaemon:
                 "give each device its own --name or they will confuse each other",
                 self.name,
             )
+
+        if self._clock() - self._started < self.warmup_s:
+            # Learning who is in the pool is not news. Take this view as the baseline
+            # and say nothing until the device has had time to settle.
+            self._previous = now
             return
+        if not self._announced:
+            # What was held back is summed up once, so the feed is not empty on a
+            # pool that formed a moment ago.
+            self._announced = True
+            online = sum(1 for _, live in self.table.snapshot() if live == ALIVE)
+            self._record(
+                "joined",
+                f"{self.name} is up, with {online} device{'s' if online != 1 else ''} in the pool",
+                self.name,
+            )
 
         for name, (liveness, state, stages) in now.items():
             if name == self.name and name not in self._previous:
