@@ -24,3 +24,12 @@ What actually happened, newest last. Each checkpoint is a git tag.
     process as its owner and backed off from itself (fixed, tested); my earlier name-clash
     edit had broken the feed's warm-up guard (fixed, tested).
 - **Tests at this point:** 409 passing. Lint clean (Python and dashboard).
+- **Checkpoint 3: compression is in the pool's path, verified for real.**
+  `configs/pool-compressed.yaml` sets the calibrated rank-256 fp16 codec; every device
+  builds it, devices with different pool settings refuse each other with a message, the
+  API and dashboard show the bytes saved. On two real devices (one GPU, one CPU): four of
+  four answers right, hidden-state traffic exactly 8x smaller (168 KiB to 21 KiB per
+  answer), routes crossing between the CPU and GPU device.
+  - **A real bug only the real model could show:** RawCodec cast integer token ids to
+    fp16, which cannot hold ids above 2048, so the first shard hit a device-side assert.
+    The tiny test model (vocab 256) hid it. Fixed at the source with regression tests.
