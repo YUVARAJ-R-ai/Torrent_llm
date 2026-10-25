@@ -328,6 +328,41 @@ def test_a_device_whose_owner_returns_hands_over_and_goes_quiet(pool, tiny_model
     ]
 
 
+def test_a_draining_device_with_no_replacement_coming_lets_go_without_waiting(pool):
+    # Four devices, four stage slots, nobody free: nothing could take over, so
+    # waiting out the grace period would achieve nothing.
+    four_devices(pool)
+    device = next(n for n in "bcd")
+    daemon = pool.peers[device].daemon
+    daemon.drain_grace_s = 30.0  # would fail the test by timeout if it were waited out
+
+    httpx.post(f"{pool.peers[device].url}/admin/owner", json={"busy": True})
+
+    wait_for(lambda: daemon.state == AWAY, timeout=5, what="the device to let go promptly")
+
+
+def test_a_draining_device_keeps_serving_until_its_replacement_is_ready(pool):
+    for name in "abcde":
+        pool.add(name)
+    wait_for(lambda: pool.settled([2, 2]), what="two copies of each stage")
+    holders = [m["name"] for m in pool.view("a")["members"] if m["hosting"] and m["name"] != "a"]
+    device = holders[0]
+    stage = pool.peers[device].daemon.shards.hosting()[0].stage
+
+    httpx.post(f"{pool.peers[device].url}/admin/owner", json={"busy": True})
+
+    # While it is draining, the pool must never fall below one usable copy of
+    # what it holds. Sample it until the device lets go.
+    daemon = pool.peers[device].daemon
+    lowest = 2
+    deadline = time.monotonic() + 15
+    while daemon.state != AWAY and time.monotonic() < deadline:
+        lowest = min(lowest, pool.view("a")["ready_copies"][stage])
+        time.sleep(0.05)
+    assert daemon.state == AWAY
+    assert lowest >= 1
+
+
 def test_a_draining_device_is_not_given_new_work(pool):
     for name in "abcde":
         pool.add(name)

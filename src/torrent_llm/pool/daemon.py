@@ -224,17 +224,33 @@ class PeerDaemon:
         # Draining or away: give up what I hold, but only once it is safe to.
         waited = self._clock() - self._drain_started
         for stage in sorted(held):
-            idle = self.shards.inflight(stage) == 0
-            covered = any(
-                m.name != self.name and m.state == ACTIVE and m.hosts(stage, ready_only=True)
-                for m in alive
-            )
-            if idle and (covered or waited >= self.drain_grace_s):
+            if self.shards.inflight(stage) == 0 and self._safe_to_release(stage, alive, waited):
                 self.shards.stop(stage)
         if not self.shards.stages():
             with self._lock:
                 if self._state == DRAINING:
                     self._state = AWAY
+
+    def _safe_to_release(self, stage: int, alive: list[Member], waited: float) -> bool:
+        """Whether letting go of ``stage`` now leaves the pool no worse off than it must be.
+
+        The aim is make before break: do not drop a copy until another one has
+        taken its place. Three things end the wait:
+
+        * the pool already has all the copies it wants without me;
+        * at least one other copy exists and no free device could add another,
+          so waiting would achieve nothing;
+        * the grace period ran out. The owner asked for the device back and
+          should get it even if that leaves the pool thinner.
+        """
+        others = [m for m in alive if m.name != self.name and m.state == ACTIVE]
+        ready = sum(1 for m in others if m.hosts(stage, ready_only=True))
+        if ready >= self.config.replicas:
+            return True
+        could_replace = any(m.slots - len(m.hosting) > 0 and not m.hosts(stage) for m in others)
+        if ready >= 1 and not could_replace:
+            return True
+        return waited >= self.drain_grace_s
 
     # --- the owner's controls --------------------------------------------------
 
