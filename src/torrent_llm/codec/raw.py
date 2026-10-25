@@ -51,7 +51,11 @@ class RawCodec(Codec):
         self.wire_dtype = wire_dtype
 
     def encode(self, tensor: torch.Tensor, *, request_id: str, hop: int) -> ActivationMessage:
-        if self.wire_dtype is not None:
+        # Only floating-point activations are narrowed. Integer tensors (token ids on the
+        # first hop) must cross exactly: 16-bit floats represent whole numbers only up
+        # to 2048, and a real vocabulary has ids above 150,000, which would arrive as
+        # somebody else's token or as an index past the embedding table.
+        if self.wire_dtype is not None and tensor.is_floating_point():
             tensor = tensor.to(getattr(torch, self.wire_dtype))
         header = ActivationHeader(
             request_id=request_id,
