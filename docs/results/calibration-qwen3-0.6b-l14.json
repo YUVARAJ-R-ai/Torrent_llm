@@ -1,0 +1,193 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "boundary": 14,
+  "hidden_size": 1024,
+  "positions_fitted": 121704,
+  "fit_text": [
+    "Alice in Wonderland",
+    "Pride and Prejudice",
+    "Sherlock Holmes",
+    "chat questions"
+  ],
+  "held_out_text": [
+    "Frankenstein"
+  ],
+  "eval_questions": 24,
+  "baseline": {
+    "perplexity": 40.39,
+    "answers_right": 0.958
+  },
+  "rows": [
+    {
+      "setting": "random",
+      "rank": 512,
+      "fp16": false,
+      "compression": 2.0,
+      "relative_error": 0.7021,
+      "perplexity": 22326.899,
+      "answers_right": 0.0,
+      "explained_variance": null
+    },
+    {
+      "setting": "pca",
+      "rank": 512,
+      "fp16": false,
+      "compression": 2.0,
+      "relative_error": 0.0214,
+      "perplexity": 40.661,
+      "answers_right": 0.917,
+      "explained_variance": 0.9997
+    },
+    {
+      "setting": "pca-nosink",
+      "rank": 512,
+      "fp16": false,
+      "compression": 2.0,
+      "relative_error": 0.0265,
+      "perplexity": 40.477,
+      "answers_right": 0.917,
+      "explained_variance": 0.9476
+    },
+    {
+      "setting": "random",
+      "rank": 256,
+      "fp16": false,
+      "compression": 4.0,
+      "relative_error": 0.8689,
+      "perplexity": 608827.1,
+      "answers_right": 0.0,
+      "explained_variance": null
+    },
+    {
+      "setting": "pca",
+      "rank": 256,
+      "fp16": false,
+      "compression": 4.0,
+      "relative_error": 0.0356,
+      "perplexity": 42.195,
+      "answers_right": 0.875,
+      "explained_variance": 0.9993
+    },
+    {
+      "setting": "pca-nosink",
+      "rank": 256,
+      "fp16": false,
+      "compression": 4.0,
+      "relative_error": 0.0492,
+      "perplexity": 42.272,
+      "answers_right": 0.875,
+      "explained_variance": 0.8538
+    },
+    {
+      "setting": "pca+fp16",
+      "rank": 256,
+      "fp16": true,
+      "compression": 8.0,
+      "relative_error": 0.0356,
+      "perplexity": 42.193,
+      "answers_right": 0.875,
+      "explained_variance": 0.9993
+    },
+    {
+      "setting": "random",
+      "rank": 128,
+      "fp16": false,
+      "compression": 8.0,
+      "relative_error": 0.9421,
+      "perplexity": 1001247.122,
+      "answers_right": 0.0,
+      "explained_variance": null
+    },
+    {
+      "setting": "pca",
+      "rank": 128,
+      "fp16": false,
+      "compression": 8.0,
+      "relative_error": 0.0486,
+      "perplexity": 50.099,
+      "answers_right": 0.792,
+      "explained_variance": 0.9986
+    },
+    {
+      "setting": "pca-nosink",
+      "rank": 128,
+      "fp16": false,
+      "compression": 8.0,
+      "relative_error": 0.08,
+      "perplexity": 53.263,
+      "answers_right": 0.667,
+      "explained_variance": 0.7226
+    },
+    {
+      "setting": "pca+fp16",
+      "rank": 128,
+      "fp16": true,
+      "compression": 16.0,
+      "relative_error": 0.0486,
+      "perplexity": 50.096,
+      "answers_right": 0.792,
+      "explained_variance": 0.9986
+    },
+    {
+      "setting": "random",
+      "rank": 64,
+      "fp16": false,
+      "compression": 16.0,
+      "relative_error": 0.9719,
+      "perplexity": 1007890.531,
+      "answers_right": 0.0,
+      "explained_variance": null
+    },
+    {
+      "setting": "pca",
+      "rank": 64,
+      "fp16": false,
+      "compression": 16.0,
+      "relative_error": 0.0599,
+      "perplexity": 84.709,
+      "answers_right": 0.167,
+      "explained_variance": 0.9978
+    },
+    {
+      "setting": "pca-nosink",
+      "rank": 64,
+      "fp16": false,
+      "compression": 16.0,
+      "relative_error": 0.1121,
+      "perplexity": 102.213,
+      "answers_right": 0.0,
+      "explained_variance": 0.5689
+    },
+    {
+      "setting": "random",
+      "rank": 32,
+      "fp16": false,
+      "compression": 32.0,
+      "relative_error": 0.9914,
+      "perplexity": 311135.535,
+      "answers_right": 0.0,
+      "explained_variance": null
+    },
+    {
+      "setting": "pca",
+      "rank": 32,
+      "fp16": false,
+      "compression": 32.0,
+      "relative_error": 0.0682,
+      "perplexity": 194.961,
+      "answers_right": 0.0,
+      "explained_variance": 0.9972
+    },
+    {
+      "setting": "pca-nosink",
+      "rank": 32,
+      "fp16": false,
+      "compression": 32.0,
+      "relative_error": 0.1593,
+      "perplexity": 304.404,
+      "answers_right": 0.0,
+      "explained_variance": 0.4319
+    }
+  ],
+  "seconds": 168
+}
