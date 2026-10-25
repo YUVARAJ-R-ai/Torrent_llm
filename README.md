@@ -44,7 +44,25 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 
 ---
 
-## See It Working
+## The Pool
+
+```bash
+scripts/pool.sh          # then open http://localhost:3000/pool
+```
+
+Devices with different hardware join, lend what their owners are willing to lend,
+and serve questions together. Each part of the model lives on several devices, so
+when one disappears, even mid-answer, the request carries on through another and the
+pool heals itself; an owner can take a device back at any time; and a busy pool
+spreads questions across every device that has room. There is no head node: every
+device runs the same program, and the dashboard works through whichever one answers.
+
+The lab runs five simulated devices on one machine, each its own process with its own
+memory, network link and (for one) GPU. See [docs/pool.md](docs/pool.md) for what is
+real and what is simulated, how to run it on real laptops, and what it does not do
+yet, and [ADR 002](docs/adr/002-leaderless-pool.md) for the design.
+
+## The Two-Device Demo
 
 ```bash
 scripts/demo.sh          # then open http://localhost:3000
