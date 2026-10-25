@@ -32,7 +32,11 @@ Three things follow, and they are the point of the project:
 |---|---|
 | **No downtime** | If a device disappears, even mid-answer, the request moves to another copy and carries on. The pool then asks a spare device to take the lost share. |
 | **Idle devices used** | A device with room offers it. A busy pool spreads questions across every copy, weighted by how fast each device is. |
-| **Owners stay in charge** | An owner can take a device back at any time. It hands its work over first, then frees its memory. |
+| **Owners stay in charge** | An owner can take a device back at any time, by button or automatically when another program takes the GPU. It hands its work over first, then frees its memory. |
+
+> **Heavy.** The lab loads the model once per device, which on a laptop means five
+> copies in memory and the GPU shared. Start with `scripts/pool.sh --start 3`, and
+> close other heavy programs first.
 
 ## Using it
 
@@ -62,7 +66,7 @@ process per simulated device. Each has its own port, memory budget, network link
 | Every process, port, socket and byte on the wire | *Where* the devices are: they share one machine |
 | The model, the split, and every token | The brand names ("MacBook Air") |
 | CUDA vs CPU: the "Gaming laptop" really runs on the GPU and the rest on the CPU, so they differ in speed | The network: each device's `link` adds that latency and bandwidth to calls to it |
-| Crashes: *crash it* is `SIGKILL`, with no goodbye | The owner: "the owner needs it" is a button, not detected activity |
+| Crashes: *crash it* is `SIGKILL`, with no goodbye | The owner: for most devices "the owner needs it" is a button. The gaming laptop detects a real program taking the GPU, but the program is one you start |
 
 Moving to real laptops changes nothing in the pool. On each one:
 
@@ -129,6 +133,27 @@ See [ADR 002](adr/002-leaderless-pool.md) for the reasoning. In short:
 - **The device** (`pool/daemon.py`, `api.py`): the beat, the HTTP API, and the owner's
   controls.
 
+### Using spare capacity
+
+A device with room also takes any stage whose slowest copy is slower than it is, so a
+fast GPU that has been idle takes work back instead of watching slower devices carry
+it. Equal or slower devices stay spare until they are needed. It only ever adds
+copies: nothing already held is dropped, so it cannot make the pool churn. Turn it off
+with `use_spare_capacity: false` in the pool file.
+
+### Noticing the owner
+
+`--watch-owner` makes a device watch the GPU through `nvidia-smi` and drain itself
+when programs outside the pool hold more than `--owner-busy-mb` (default 1500) of its
+memory. A desktop and browser hold a few hundred MB; a game or a training job holds
+gigabytes. Backing off takes two readings in a row and coming back takes six quiet
+ones, so a game's menu does not make the device flap, and it never undoes a drain the
+owner started by hand. NVIDIA GPUs only for now; elsewhere the button still works.
+
+Tried on the lab: starting an unrelated 2.4 GB CUDA program made the gaming device
+hand over to two CPU devices in about 6 s with the pool staying healthy, and it was
+lending again about 6 s after the program ended.
+
 ### Taking a device back
 
 `POST /admin/owner {"busy": true}` starts a drain. The device stops taking new
@@ -159,8 +184,8 @@ work as the fast one's queue grows.
   (issue #37). Relay would shorten the path; routing and failover would carry over.
 - **Verify results.** A member that lies about its hardware or returns wrong tensors
   is not detected.
-- **Detect a busy owner by itself.** "The owner needs the device" is a button today. A
-  real deployment would watch GPU use or foreground activity and press it.
+- **Detect an owner without an NVIDIA GPU.** Automatic detection reads `nvidia-smi`.
+  Other hardware uses the button.
 - **Compress activations.** The low-rank compressor is not in the pool's path.
 - **Cross the open internet.** Discovery is "know one address". The DHT (issue #15)
   would replace it.
@@ -170,9 +195,9 @@ work as the fast one's queue grows.
 
 | | |
 |---|---|
-| `src/torrent_llm/pool/` | the pool: `members`, `placement`, `router`, `runner`, `hosting`, `daemon`, `api`, `peer`, `lab` |
+| `src/torrent_llm/pool/` | the pool: `members`, `placement`, `router`, `runner`, `hosting`, `daemon`, `owner`, `api`, `peer`, `lab` |
 | `configs/pool-lab.yaml` | the lab's six pretend devices |
 | `scripts/pool.sh` | start the lab and dashboard |
 | `scripts/pool_load.py` | many questions at once |
 | `dashboard/app/pool/` | the Pool page |
-| `tests/test_pool_core.py`, `test_pool.py`, `test_lab.py` | unit tests, whole-pool tests over real sockets |
+| `tests/test_pool_core.py`, `test_pool.py`, `test_owner.py`, `test_lab.py` | unit tests, whole-pool tests over real sockets |
