@@ -12,6 +12,7 @@ import logging
 import platform
 import socket
 import time
+from collections.abc import Sequence
 from concurrent import futures
 
 import grpc
@@ -194,6 +195,7 @@ def serve(
     port: int = 0,
     model_id: str = "unknown",
     max_workers: int = 4,
+    interceptors: Sequence[grpc.ServerInterceptor] = (),
 ) -> tuple[grpc.Server, int]:
     """Start a shard server.
 
@@ -201,11 +203,15 @@ def serve(
         port: ``0`` asks the OS for a free port, which is what the tests and the
             single-machine multi-process rig use.
 
+        interceptors: Wrap every call, e.g. to count the requests in flight.
+
     Returns:
         The started server and the port it actually bound.
     """
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=max_workers), options=SERVER_OPTIONS
+        futures.ThreadPoolExecutor(max_workers=max_workers),
+        options=SERVER_OPTIONS,
+        interceptors=list(interceptors),
     )
     pb_grpc.add_ShardServiceServicer_to_server(
         ShardService(runtime, codec, model_id=model_id), server

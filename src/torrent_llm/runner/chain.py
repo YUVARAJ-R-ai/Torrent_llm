@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 
+import grpc
 import torch
 
 from torrent_llm.codec import get_codec
@@ -21,6 +22,36 @@ from torrent_llm.sampling import GREEDY, Sampling, select_tokens
 from torrent_llm.transport import HopResult, ShardClient
 
 logger = logging.getLogger(__name__)
+
+
+class HopError(RuntimeError):
+    """One hop of the chain failed, and which one.
+
+    A plain ``grpc.RpcError`` says a call failed but not which node of the chain
+    it was. Failover needs exactly that: it has to know which replica to stop
+    using. The original error is kept as ``__cause__`` and its status in ``code``.
+    """
+
+    def __init__(self, hop: int, address: str, cause: grpc.RpcError) -> None:
+        code = cause.code() if hasattr(cause, "code") else None
+        detail = cause.details() if hasattr(cause, "details") else str(cause)
+        super().__init__(f"hop {hop} ({address}) failed: {code.name if code else '?'}: {detail}")
+        self.hop = hop
+        self.address = address
+        self.code = code
+
+    @property
+    def is_node_loss(self) -> bool:
+        """True when the node itself is gone or unreachable, not merely unhappy.
+
+        ``FAILED_PRECONDITION`` (a lost cache session) is not node loss: the node
+        answered. It still needs a re-prefill, but it is worth trying again.
+        """
+        return self.code in (
+            grpc.StatusCode.UNAVAILABLE,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            grpc.StatusCode.CANCELLED,
+        )
 
 
 @dataclass
@@ -60,14 +91,21 @@ class ChainResult:
 class ChainRunner:
     """Walks token ids through every shard and returns logits."""
 
-    def __init__(self, config: TopologyConfig, *, profiler: HopProfiler | None = None) -> None:
+    def __init__(
+        self,
+        config: TopologyConfig,
+        *,
+        profiler: HopProfiler | None = None,
+        token: str | None = None,
+    ) -> None:
         self.config = config
         self.profiler = profiler
         self.clients = [
             ShardClient(
                 node.address,
                 get_codec(config.codec, **config.codec_args),
-                link=config.link,
+                link=node.link or config.link,
+                token=token,
             )
             for node in config.nodes
         ]
@@ -126,10 +164,10 @@ class ChainRunner:
         hops: list[HopResult] = []
 
         sent = input_ids
-        result = self.clients[0].forward(
+        result = self._hop(
+            0,
             input_ids,
             request_id=request_id,
-            hop=0,
             is_token_ids=True,
             position_ids=position_ids,
             use_cache=use_cache,
@@ -140,12 +178,12 @@ class ChainRunner:
         hops.append(result)
         self._profile(result, request_id, 0, sent, phase)
 
-        for hop, client in enumerate(self.clients[1:], start=1):
+        for hop in range(1, len(self.clients)):
             sent = result.tensor
-            result = client.forward(
+            result = self._hop(
+                hop,
                 sent,
                 request_id=request_id,
-                hop=hop,
                 position_ids=position_ids,
                 logits_keep_last=logits_keep_last,
                 use_cache=use_cache,
@@ -168,6 +206,14 @@ class ChainRunner:
                 logits=None, token_ids=result.tensor, hops=hops, request_id=request_id
             )
         return ChainResult(logits=result.tensor, hops=hops, request_id=request_id)
+
+    def _hop(self, hop: int, tensor: torch.Tensor, **kwargs) -> HopResult:
+        """Send one hop, naming the hop if it fails."""
+        client = self.clients[hop]
+        try:
+            return client.forward(tensor, hop=hop, **kwargs)
+        except grpc.RpcError as exc:
+            raise HopError(hop, client.address, exc) from exc
 
     def _profile(
         self,

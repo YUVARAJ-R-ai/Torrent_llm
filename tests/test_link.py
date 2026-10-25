@@ -117,3 +117,25 @@ def test_shaping_changes_the_clock_but_not_the_bytes(served_chain):
 
     assert [h.sent_bytes for h in slow.hops] == [h.sent_bytes for h in plain.hops]
     assert torch.equal(slow.logits, plain.logits)
+
+
+def test_a_node_link_overrides_the_topology_link():
+    config = TopologyConfig.from_dict(
+        {
+            "model_id": "tiny",
+            "num_layers": 4,
+            "link": {"latency_ms": 30, "bandwidth_mbps": 100},
+            "nodes": [
+                {"address": "127.0.0.1:1"},
+                {"address": "127.0.0.1:2", "link": {"latency_ms": 200, "bandwidth_mbps": 5}},
+            ],
+        }
+    )
+
+    with ChainRunner(config) as runner:
+        links = [client.link for client in runner.clients]
+
+    assert links == [
+        LinkProfile(latency_ms=30, bandwidth_mbps=100),
+        LinkProfile(latency_ms=200, bandwidth_mbps=5),
+    ]

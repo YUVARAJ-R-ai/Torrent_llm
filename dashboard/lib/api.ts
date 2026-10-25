@@ -150,7 +150,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
-  } catch (cause) {
+  } catch {
     // fetch only rejects on a transport-level failure, which here almost
     // always means the API process is not running at all — a much more useful
     // thing to say than "Failed to fetch".

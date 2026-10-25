@@ -32,9 +32,11 @@
      slot 3 (aqua #1baf7a), not a generated hue. */
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a;
 
   --status-good: #0ca30c;
   --status-critical: #d03b3b;
+  --status-warn: #c98a00;
   --success-text: #006300;
 }
 
@@ -55,9 +57,11 @@
 
     --series-1: #3987e5;
     --series-2: #d95926;
+    --series-3: #1baf7a;
 
     --status-good: #0ca30c;
     --status-critical: #d03b3b;
+    --status-warn: #e0a31a;
     --success-text: #0ca30c;
   }
 }
@@ -78,9 +82,11 @@
 
   --series-1: #3987e5;
   --series-2: #d95926;
+  --series-3: #1baf7a;
 
   --status-good: #0ca30c;
   --status-critical: #d03b3b;
+  --status-warn: #e0a31a;
   --success-text: #0ca30c;
 }
 

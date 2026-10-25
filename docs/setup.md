@@ -29,6 +29,14 @@ ruff check .
 If an import fails with `No module named 'torrent_llm.transport.activation_pb2'`,
 you skipped the codegen step.
 
+## The pool (one command)
+
+```bash
+scripts/pool.sh
+```
+
+Five simulated devices and the Pool page. See [pool.md](pool.md).
+
 ## Showcase demo (one command)
 
 ```bash

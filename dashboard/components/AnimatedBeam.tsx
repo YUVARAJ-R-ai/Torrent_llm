@@ -40,6 +40,17 @@ export interface AnimatedBeamProps {
   pathColor?: string;
   gradientStartColor?: string;
   gradientStopColor?: string;
+  /**
+   * How the ends are placed. "axis" (the default) joins neighbours in a row or
+   * a stack. "edges" draws the straight line between the two centres and clips
+   * it to each element's border, so elements may sit anywhere relative to each
+   * other, as cards do when they move between columns.
+   */
+  fit?: "axis" | "edges";
+  /** Change this to re-measure, e.g. after elements finished moving. */
+  remeasureKey?: unknown;
+  /** Draw only while a pulse is in flight, with no dashed line at rest. */
+  quiet?: boolean;
 }
 
 export default function AnimatedBeam({
@@ -53,6 +64,9 @@ export default function AnimatedBeam({
   pathColor = "var(--baseline)",
   gradientStartColor = "var(--series-1)",
   gradientStopColor = "var(--series-2)",
+  fit = "axis",
+  remeasureKey,
+  quiet = false,
 }: AnimatedBeamProps) {
   // useId output contains characters that are not valid in a url(#...)
   // reference, so keep only the safe ones.
@@ -83,9 +97,18 @@ export default function AnimatedBeam({
         y: rb.top - box.top + rb.height / 2,
       };
 
+      const horizontal = Math.abs(cb.x - ca.x) >= Math.abs(cb.y - ca.y);
+      if (fit === "edges") {
+        // Clip the centre-to-centre line to each element's border, so the line
+        // never runs underneath a card whichever way the two sit.
+        const a = clipToRect(ca, cb, ra.width / 2, ra.height / 2);
+        const b = clipToRect(cb, ca, rb.width / 2, rb.height / 2);
+        setSize({ width: box.width, height: box.height });
+        setEnds({ a, b, horizontal });
+        return;
+      }
       // Start and end at the elements' edges, not their centres, so the line
       // never runs underneath a card.
-      const horizontal = Math.abs(cb.x - ca.x) >= Math.abs(cb.y - ca.y);
       // Stacked, a node's caption sits under it in the line's path, so the
       // line has to start below the whole node, caption included.
       const below = horizontal
@@ -105,8 +128,20 @@ export default function AnimatedBeam({
     const observer = new ResizeObserver(update);
     if (containerRef.current) observer.observe(containerRef.current);
     update();
-    return () => observer.disconnect();
-  }, [containerRef, fromRef, toRef]);
+    // Cards animate into place after a re-layout, so measure again for a
+    // moment instead of trusting the first reading.
+    let frame = 0;
+    const until = performance.now() + 700;
+    const follow = () => {
+      update();
+      if (performance.now() < until) frame = requestAnimationFrame(follow);
+    };
+    if (fit === "edges") frame = requestAnimationFrame(follow);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [containerRef, fromRef, toRef, fit, remeasureKey]);
 
   if (!ends) return null;
 
@@ -135,13 +170,15 @@ export default function AnimatedBeam({
         className="pointer-events-none absolute top-0 left-0 transform-gpu"
         aria-hidden
       >
-        <path
-          d={`M ${a.x},${a.y} L ${b.x},${b.y}`}
-          stroke={pathColor}
-          strokeWidth={2}
-          strokeDasharray="4 6"
-          strokeLinecap="round"
-        />
+        {!quiet && (
+          <path
+            d={`M ${a.x},${a.y} L ${b.x},${b.y}`}
+            stroke={pathColor}
+            strokeWidth={2}
+            strokeDasharray="4 6"
+            strokeLinecap="round"
+          />
+        )}
         {pulse > 0 && (
           <motion.path
             key={`trail-${pulse}`}
@@ -252,4 +289,25 @@ export default function AnimatedBeam({
       </AnimatePresence>
     </>
   );
+}
+
+/**
+ * Where the line from ``from`` toward ``to`` leaves a box centred on ``from``
+ * with the given half-sizes. Used so lines stop at a card's edge.
+ */
+function clipToRect(
+  from: Point,
+  to: Point,
+  halfW: number,
+  halfH: number,
+): Point {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx === 0 && dy === 0) return from;
+  // Scale the direction until it touches whichever side it hits first.
+  const scale = Math.min(
+    dx === 0 ? Infinity : halfW / Math.abs(dx),
+    dy === 0 ? Infinity : halfH / Math.abs(dy),
+  );
+  return { x: from.x + dx * scale, y: from.y + dy * scale };
 }

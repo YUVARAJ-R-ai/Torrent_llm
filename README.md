@@ -44,10 +44,28 @@ See [docs/research.md](docs/research.md) for the full competitive landscape, fea
 
 ---
 
-## See It Working
+## The Pool
 
 ```bash
-scripts/demo.sh          # then open http://localhost:3000
+scripts/pool.sh          # then open http://localhost:3000
+```
+
+Devices with different hardware join, lend what their owners are willing to lend,
+and serve questions together. Each part of the model lives on several devices, so
+when one disappears, even mid-answer, the request carries on through another and the
+pool heals itself; an owner can take a device back at any time; and a busy pool
+spreads questions across every device that has room. There is no head node: every
+device runs the same program, and the dashboard works through whichever one answers.
+
+The lab runs five simulated devices on one machine, each its own process with its own
+memory, network link and (for one) GPU. See [docs/pool.md](docs/pool.md) for what is
+real and what is simulated, how to run it on real laptops, and what it does not do
+yet, and [ADR 002](docs/adr/002-leaderless-pool.md) for the design.
+
+## The Two-Device Demo
+
+```bash
+scripts/demo.sh          # then open http://localhost:3000/two-devices
 ```
 
 This starts two shard processes that each hold half of Qwen3-0.6B, the HTTP
@@ -74,7 +92,7 @@ The dense testing view is still there at `/details`.
 
 ## Project Status
 
-The layer-sharded pipeline is built and measured; the compressor is next.
+The layer-sharded pipeline and the device pool are built and measured. The learned compressor and the multi-agent layer exist in the repository but are not yet part of the working system: see the table.
 
 ### What runs today
 
@@ -86,6 +104,9 @@ torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France
 
 | Component | State |
 |---|---|
+| **Device pool** | built — devices find each other by gossip, hold several copies of each model stage, survive a device vanishing mid-answer, hand over when an owner reclaims a GPU, and spread questions across everything with room. See [docs/pool.md](docs/pool.md) |
+| Pool access control (#29) | built — a shared token guards the HTTP and gRPC ports; it is access control, not encryption |
+| Final shard picks the token (#33) | built — the last hop returns 8 bytes instead of 594 KiB of scores |
 | Layer-sharded model hosting (#4) | built — sharded logits are **bit-exact** against the monolithic model |
 | gRPC activation transport (#5) | built — 512 MiB message cap, per-hop compute/transport split reported |
 | Per-hop bandwidth profiler (#6) | built — JSONL records, hop summaries, projection to unrun model sizes |
@@ -94,7 +115,9 @@ torrent-run   --config configs/local-2shard.yaml --prompt "The capital of France
 | Heterogeneous routing weights (#17) | built — layers split proportionally to relative node capability |
 | HTTP layer (#26) | built — `torrent-api`, drives and instruments the chain over HTTP |
 | Dashboard (#27) | built — browser view of a run; a testing tool, not the final interface |
-| Learned low-rank compressor (#8) | not started — the contribution |
+| Low-rank compressor (#8) | **partly built, not working** — a random orthonormal projection is merged, and it shrinks the wire 8× but breaks the output ("during" for "Paris"). It has not been calibrated or trained, so it is not in the pool's path and no compression result should be quoted from it |
+| Multi-agent roles (#11) | **simulated** — the Planner, Solver and Critic roles are merged, but the latent state passed between them is random numbers and the default run uses scripted text. It is not a result |
+| Peer-to-peer relay (#37), credits (#19) | not started — every hop still passes through the device that took the question |
 
 See [docs/setup.md](docs/setup.md) to install and run, and
 [docs/adr/001-minimal-harness.md](docs/adr/001-minimal-harness.md) for why this is

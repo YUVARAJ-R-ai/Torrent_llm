@@ -24,6 +24,10 @@ class NodeConfig:
 
     address: str
     device: str = "cpu"
+    #: This node's own link, overriding the topology-wide one. Lets a pool of
+    #: devices each sit behind a different connection (fibre, home Wi-Fi,
+    #: tethered phone) instead of all sharing one simulated link.
+    link: LinkProfile | None = None
 
     @property
     def port(self) -> int:
@@ -99,7 +103,7 @@ class TopologyConfig:
         return cls(
             model_id=raw["model_id"],
             num_layers=int(raw["num_layers"]),
-            nodes=[NodeConfig(**n) for n in raw["nodes"]],
+            nodes=[_node_from_dict(n) for n in raw["nodes"]],
             dtype=raw.get("dtype", "float32"),
             codec=codec,
             codec_args=codec_args,
@@ -108,3 +112,9 @@ class TopologyConfig:
             trust_remote_code=bool(raw.get("trust_remote_code", False)),
             link=LinkProfile.from_dict(raw.get("link")),
         )
+
+
+def _node_from_dict(raw: dict[str, Any]) -> NodeConfig:
+    fields = dict(raw)
+    fields["link"] = LinkProfile.from_dict(fields.get("link"))
+    return NodeConfig(**fields)
