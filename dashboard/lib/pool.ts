@@ -386,6 +386,7 @@ export function usePool(intervalMs = 1000) {
       getJson(`${memberUrl(member)}/admin/owner`, {
         method: "POST",
         body: JSON.stringify({ busy }),
+        headers: poolTokenHeader(),
       }),
     [],
   );
@@ -416,4 +417,17 @@ function mergeEvents(
   const seen = new Set(have.map((e) => `${e.t}|${e.text}`));
   const fresh = incoming.filter((e) => !seen.has(`${e.t}|${e.text}`));
   return [...have, ...fresh].slice(-60);
+}
+
+/**
+ * The pool's shared token, for actions that change the pool, if the page was opened
+ * with one in its address (`?token=...`).
+ *
+ * Asking questions and looking never need it. It is read from the address rather
+ * than stored, so it is only as visible as the link the person chose to share.
+ */
+function poolTokenHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = new URLSearchParams(window.location.search).get("token");
+  return token ? { "x-pool-token": token } : {};
 }

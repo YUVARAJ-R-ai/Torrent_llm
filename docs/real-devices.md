@@ -121,7 +121,9 @@ device the same one:
 scripts/join.sh --token "pick-a-long-random-phrase"
 ```
 
-Devices without it are refused by the other devices and by their model ports. This is
+Devices without it are refused by the other devices and by their model ports. The page's
+**owner** buttons change a device, so they need the token too: open the page as
+`http://192.168.1.20:9000/?token=pick-a-long-random-phrase`. Asking questions never needs it. This is
 access control, not encryption: on a network you do not trust, use Tailscale as well.
 
 ## Options
