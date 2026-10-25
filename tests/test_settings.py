@@ -241,3 +241,12 @@ def test_the_codec_is_part_of_what_names_a_pool():
     assert plain.codec_signature == "raw"
     assert squeezed.codec_signature == "lowrank-r8"
     assert plain.codec_signature != squeezed.codec_signature
+
+
+def test_the_request_limit_can_be_set_and_has_a_default_per_hardware():
+    default = settings("--pool", POOL)
+    chosen = settings("--pool", POOL, "--max-requests", "2")
+
+    assert default.profile.max_requests is None
+    assert default.profile.request_limit(default.resolved_device) == 3  # a CPU
+    assert chosen.profile.request_limit("cuda") == 2

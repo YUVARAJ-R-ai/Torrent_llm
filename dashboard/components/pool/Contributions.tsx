@@ -1,3 +1,4 @@
+import { formatMs } from "@/lib/format";
 import type { PoolMember } from "@/lib/pool";
 
 /** Compute a device has given to the pool, in seconds, since it started. */
@@ -51,7 +52,7 @@ export default function Contributions({ members }: { members: PoolMember[] }) {
                 className="tabular shrink-0"
                 style={{ color: "var(--text-muted)" }}
               >
-                gave {gave.toFixed(1)} s · asked {used} tokens
+                gave {formatMs(gave * 1000)} · asked {used} tokens
               </span>
             </div>
             <Bar value={gave / maxGave} color="var(--series-1)" label="given" />

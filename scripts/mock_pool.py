@@ -83,6 +83,9 @@ class Device:
         self.hosting: dict[int, tuple[str, float]] = {}  # stage -> (status, ready_at)
         self.inflight = 0
         self.served = 0
+        self.asked = 0
+        self.asked_tokens = 0
+        self.busy_ms = 0.0
         self.stage_ports = {}
 
 
@@ -170,6 +173,7 @@ class MockPool:
                 status=status,
                 inflight=device.inflight if status == READY else 0,
                 served=device.served,
+                busy_ms=int(device.busy_ms / max(1, len(device.hosting))),
             )
             for s, (status, _) in sorted(device.hosting.items())
         )
@@ -186,6 +190,8 @@ class MockPool:
             link=p.link.describe() if p.link else None,
             state=device.state,
             hosting=hosting,
+            asked=device.asked,
+            asked_tokens=device.asked_tokens,
         )
 
     def known(self) -> list[Device]:
@@ -356,6 +362,7 @@ class MockPool:
                 transport = (
                     latency + (bytes_ * 8 / ((link.bandwidth_mbps if link else 1000) * 1e6)) * 1000
                 )
+                d.busy_ms += compute
                 hops.append(
                     {
                         "stage": r.stage,
@@ -396,6 +403,8 @@ class MockPool:
                 recovery = False
             i += 1
         all_hops = [h for p in passes for h in p["hops"]]
+        me.asked += 1
+        me.asked_tokens += len(tokens)
         return {
             "prompt": prompt,
             "completion": "".join(tokens),

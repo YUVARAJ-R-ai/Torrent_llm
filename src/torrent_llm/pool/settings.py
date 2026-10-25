@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-busy-mb", type=int, help="GPU memory others may hold before backing off"
     )
     parser.add_argument(
+        "--max-requests",
+        type=int,
+        help="questions to start at once before refusing more (default: 8 on a GPU, 3 on a CPU)",
+    )
+    parser.add_argument(
         "--profile", help="take this device's description from the pool file (lab use)"
     )
     parser.add_argument("--link-latency-ms", type=float)
@@ -179,6 +184,7 @@ def settings_from_args(args: argparse.Namespace) -> PeerSettings:
         "device": args.device,
         "speed": args.speed,
         "owner_busy_mb": args.owner_busy_mb,
+        "max_requests": args.max_requests,
     }.items():
         if value is not None:
             base[key] = value
