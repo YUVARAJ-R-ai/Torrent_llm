@@ -30,7 +30,10 @@ VIRTUAL_ENV="$venv" uv pip install -e ".[api,dev]" --torch-backend auto
 "$venv/bin/python" -m torrent_llm.codegen
 echo "downloading $model (skipped if already cached)"
 "$venv/bin/python" -c "from huggingface_hub import snapshot_download; snapshot_download('$model')"
-"$venv/bin/python" -m pytest -q
+# join.sh skips this: it is a smoke test for whoever develops, and slows a first start.
+if [ -z "${TORRENT_SKIP_TESTS:-}" ]; then
+  "$venv/bin/python" -m pytest -q
+fi
 
 "$venv/bin/python" -c "
 import torch

@@ -135,3 +135,17 @@ def test_a_busy_compute_share_alone_counts_as_use():
     m.sample()
 
     assert calls == [True]
+
+
+def test_a_device_never_mistakes_its_own_process_for_its_owner():
+    import os
+
+    from torrent_llm.pool.owner import belongs_to_pool
+
+    assert belongs_to_pool(os.getpid())
+
+
+def test_a_foreign_process_is_not_the_pools():
+    from torrent_llm.pool.owner import belongs_to_pool
+
+    assert not belongs_to_pool(2**22 + 12345)  # no such process

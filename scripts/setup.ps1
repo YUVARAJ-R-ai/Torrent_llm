@@ -39,7 +39,8 @@ try {
     Invoke-Step $py -m torrent_llm.codegen
     Write-Host "downloading $Model (skipped if already cached)"
     Invoke-Step $py -c "from huggingface_hub import snapshot_download; snapshot_download('$Model')"
-    Invoke-Step $py -m pytest -q
+    # join.ps1 skips this: it is a smoke test for whoever develops, and slows a first start.
+    if (-not $env:TORRENT_SKIP_TESTS) { Invoke-Step $py -m pytest -q }
     Invoke-Step $py -c "import torch; from torrent_llm.shard import resolve_device; print(f'\nready: torch {torch.__version__}, device auto -> {resolve_device('auto')}')"
     Write-Host "next: see docs\multi-machine.md"
 }

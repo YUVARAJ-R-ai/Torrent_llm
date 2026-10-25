@@ -661,3 +661,46 @@ def test_shard_servers_use_the_ports_they_were_given(model_factory, num_layers):
         assert {h.stage: h.port for h in host.hosting()} == {0: base, 1: base + 1}
     finally:
         host.close()
+
+
+# --- the dashboard served by the device itself --------------------------------------------
+
+
+def test_opening_a_device_in_a_browser_shows_the_dashboard(pool):
+    pool.add("a")
+
+    page = httpx.get(f"{pool.peers['a'].url}/")
+
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert "Torrent-LLM" in page.text
+
+
+def test_the_api_still_wins_where_a_path_could_be_a_page(pool):
+    pool.add("a")
+
+    body = httpx.get(f"{pool.peers['a'].url}/pool").json()
+
+    assert body["self"] == "a" and "members" in body
+
+
+def test_only_pages_from_private_networks_may_call_a_device(model_factory, num_layers):
+    from torrent_llm.pool.settings import PRIVATE_ORIGIN_REGEX
+
+    config = PoolConfig(model_id="tiny", num_layers=num_layers, stages=2, replicas=1, shard_mb=1000)
+    peer = launch(
+        config,
+        DeviceProfile(name="solo", memory_mb=1000, device="cpu"),
+        lambda spec: ShardRuntime(model_factory(), spec),
+        CharTokenizer(),
+        cors_regex=PRIVATE_ORIGIN_REGEX,
+        **FAST,
+    )
+    try:
+        lan = httpx.get(f"{peer.url}/pool", headers={"Origin": "http://192.168.1.50:9000"})
+        web = httpx.get(f"{peer.url}/pool", headers={"Origin": "https://evil.example.com"})
+
+        assert lan.headers.get("access-control-allow-origin") == "http://192.168.1.50:9000"
+        assert "access-control-allow-origin" not in web.headers
+    finally:
+        peer.close(graceful=False)

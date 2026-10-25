@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { SAME_ORIGIN } from "@/lib/pool";
+
 const PAGES = [
   { href: "/", label: "Pool" },
   { href: "/two-devices", label: "Two devices" },
@@ -8,6 +10,9 @@ const PAGES = [
 
 /** The three views of the same project, as a quiet row of links. */
 export default function Nav({ current }: { current: string }) {
+  // A device serves only the pool view: the other two pages talk to a single-chain
+  // API that a device does not run.
+  if (SAME_ORIGIN) return null;
   return (
     <nav className="flex gap-4 text-xs" aria-label="Views">
       {PAGES.map((page) =>

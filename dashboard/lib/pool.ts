@@ -15,12 +15,30 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const SEEDS = (
+/**
+ * Set when this page is served by a device itself (the build every device ships
+ * with). The device it came from is then the one to ask, wherever that is, with no
+ * addresses to configure and no lab, since a lab only exists on one machine
+ * simulating several.
+ */
+export const SAME_ORIGIN = process.env.NEXT_PUBLIC_POOL_SAME_ORIGIN === "1";
+
+const DEV_SEEDS = (
   process.env.NEXT_PUBLIC_POOL_SEEDS ??
   "http://127.0.0.1:9101,http://127.0.0.1:9102,http://127.0.0.1:9103"
 ).split(",");
-export const LAB_BASE =
-  process.env.NEXT_PUBLIC_LAB_BASE ?? "http://127.0.0.1:8100";
+
+/** Where to start looking for the pool. */
+function seeds(): string[] {
+  if (SAME_ORIGIN && typeof window !== "undefined") {
+    return [window.location.origin];
+  }
+  return DEV_SEEDS;
+}
+
+export const LAB_BASE = SAME_ORIGIN
+  ? ""
+  : (process.env.NEXT_PUBLIC_LAB_BASE ?? "http://127.0.0.1:8100");
 
 export type Liveness = "alive" | "suspect" | "down";
 export type DeviceState = "active" | "draining" | "away" | "left";
@@ -214,10 +232,11 @@ export function usePool(intervalMs = 1000) {
     error: null,
   });
   const base = useRef<string | null>(null);
-  const known = useRef<string[]>(SEEDS);
+  const known = useRef<string[]>([]);
   const lastEvent = useRef(0);
 
   const poll = useCallback(async () => {
+    if (known.current.length === 0) known.current = seeds();
     // Start from the device that worked last time, then everyone else.
     const order = [base.current, ...known.current].filter(
       (u, i, all): u is string => !!u && all.indexOf(u) === i,
@@ -234,7 +253,7 @@ export function usePool(intervalMs = 1000) {
     }
 
     if (!view) {
-      for (const url of SEEDS.filter((u) => !order.includes(u))) {
+      for (const url of seeds().filter((u) => !order.includes(u))) {
         try {
           view = await getJson<PoolView>(`${url}/pool`);
           base.current = url;
@@ -269,6 +288,7 @@ export function usePool(intervalMs = 1000) {
 
     let lab: LabDevice[] | null = null;
     try {
+      if (!LAB_BASE) throw new Error("no lab here");
       lab = (
         await getJson<{ devices: LabDevice[] }>(
           `${LAB_BASE}/lab`,

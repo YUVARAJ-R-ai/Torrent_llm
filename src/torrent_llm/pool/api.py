@@ -23,10 +23,12 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from pathlib import Path
 from typing import Any, Protocol
 
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT, NoChatTemplate, render_chat
@@ -37,6 +39,9 @@ from torrent_llm.pool.placement import coverage
 from torrent_llm.pool.router import NoReplica
 from torrent_llm.pool.runner import PoolUnavailable
 from torrent_llm.sampling import Sampling
+
+#: The dashboard build shipped with the package (see scripts/build_ui.sh).
+DEFAULT_UI_DIR = Path(__file__).resolve().parent / "ui"
 
 
 class Tokenizer(Protocol):
@@ -71,6 +76,7 @@ def create_peer_app(
     daemon: PeerDaemon,
     tokenizer: Tokenizer,
     *,
+    ui_dir: Path | None = DEFAULT_UI_DIR,
     stop_token_ids: set[int] | None = None,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
     on_leave=None,
@@ -203,6 +209,12 @@ def create_peer_app(
         if on_leave is not None:
             threading.Timer(0.2, on_leave).start()
         return {"state": "leaving"}
+
+    # The dashboard, served by the device itself so that opening any device in a
+    # browser shows the pool, with nothing else installed. Mounted last so that
+    # every API route above wins where a path could be either.
+    if ui_dir is not None and (ui_dir / "index.html").exists():
+        app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
 
     return app
 
