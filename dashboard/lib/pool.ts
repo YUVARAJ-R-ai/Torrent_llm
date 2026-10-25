@@ -49,6 +49,8 @@ export interface HostedStage {
   status: "loading" | "ready" | "failed";
   inflight: number;
   served: number;
+  /** Milliseconds spent computing for requests since the stage came up. */
+  busy_ms: number;
 }
 
 export interface PoolMember {
@@ -65,6 +67,9 @@ export interface PoolMember {
   link: { latency_ms: number; bandwidth_mbps: number } | null;
   state: DeviceState;
   hosting: HostedStage[];
+  /** Questions asked through this device, and the tokens they produced. */
+  asked: number;
+  asked_tokens: number;
   liveness: Liveness;
   is_self: boolean;
   rtt_ms: number | null;

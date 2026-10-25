@@ -49,6 +49,7 @@ from torrent_llm.pool.members import (
 from torrent_llm.pool.owner import OwnerMonitor
 from torrent_llm.pool.placement import wanted_stages
 from torrent_llm.pool.runner import PoolRunner
+from torrent_llm.shard import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class PeerDaemon:
             token=token,
             codec=get_codec(config.codec, **config.codec_args),
             port_base=shard_port_base,
+            max_requests=profile.request_limit(resolve_device(profile.device)),
             clock=clock,
         )
         self.owner_monitor = None
@@ -127,6 +129,8 @@ class PeerDaemon:
         self.discovery: Discovery | None = None
         self._reported_clashes: set[str] = set()
         self._announced = False
+        self._asked = 0
+        self._asked_tokens = 0
         self._reported_mismatches: set[str] = set()
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
@@ -235,8 +239,6 @@ class PeerDaemon:
 
     def publish(self) -> Member:
         """Write my own entry, with a heartbeat that has moved on."""
-        from torrent_llm.shard import resolve_device
-
         with self._lock:
             self._heartbeat += 1
             link = self.profile.link.describe() if self.profile.link else None
@@ -254,6 +256,8 @@ class PeerDaemon:
                 link=link,
                 state=self._state,
                 hosting=self.shards.hosting(),
+                asked=self._asked,
+                asked_tokens=self._asked_tokens,
                 incarnation=self._incarnation,
                 heartbeat=self._heartbeat,
             )
@@ -338,6 +342,12 @@ class PeerDaemon:
         if ready >= 1 and not could_replace:
             return True
         return waited >= self.drain_grace_s
+
+    def record_asked(self, tokens: int) -> None:
+        """A question was answered through this device: count what it used."""
+        with self._lock:
+            self._asked += 1
+            self._asked_tokens += tokens
 
     # --- the owner's controls --------------------------------------------------
 

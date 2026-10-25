@@ -68,13 +68,22 @@ class Pool:
         self._model_factory = model_factory
         self.peers: dict[str, object] = {}
 
-    def add(self, name, *, memory_mb=1000, speed=1.0, link=None, join=True, seed=None):
+    def add(
+        self, name, *, memory_mb=1000, speed=1.0, link=None, join=True, seed=None, max_requests=None
+    ):
         spec_loader = lambda spec: ShardRuntime(self._model_factory(), spec)  # noqa: E731
         first = [seed] if seed is not None else list(self.peers.values())[:1]
         seeds = [p.url.removeprefix("http://") for p in first] if join else []
         peer = launch(
             self.config,
-            DeviceProfile(name=name, memory_mb=memory_mb, speed=speed, link=link, device="cpu"),
+            DeviceProfile(
+                name=name,
+                memory_mb=memory_mb,
+                speed=speed,
+                link=link,
+                device="cpu",
+                max_requests=max_requests,
+            ),
             spec_loader,
             CharTokenizer(),
             join=seeds,

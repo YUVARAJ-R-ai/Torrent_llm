@@ -132,6 +132,15 @@ class DeviceProfile:
     #: Back off automatically when other programs take this much GPU memory.
     watch_owner: bool = False
     owner_busy_mb: int = 1500
+    #: Questions this device will start at once before refusing more. ``None`` picks
+    #: a default for the hardware (more for a GPU than a CPU).
+    max_requests: int | None = None
+
+    def request_limit(self, resolved_device: str) -> int:
+        """How many questions to start at once. A GPU copes with far more than a CPU."""
+        if self.max_requests is not None:
+            return self.max_requests
+        return 8 if resolved_device.startswith(("cuda", "mps")) else 3
 
     def slots(self, shard_mb: int) -> int:
         """How many stages this device has memory for."""
@@ -150,6 +159,7 @@ class DeviceProfile:
             "speed",
             "watch_owner",
             "owner_busy_mb",
+            "max_requests",
         }
         unknown = fields.keys() - known
         if unknown:

@@ -85,7 +85,7 @@ class PassInfo:
 class PoolEvent:
     """Something that happened to the request on its way."""
 
-    kind: str  # "failover" | "waiting" | "recovered"
+    kind: str  # "failover" | "waiting" | "recovered" | "busy"
     at_pass: int  # how many passes had completed when it happened
     step: int
     stage: int | None = None
@@ -129,9 +129,11 @@ class PoolRunner:
         me: str | None = None,
         patience: float = 10.0,
         max_failovers: int = 6,
+        max_busy_retries: int = 30,
         poll_s: float = 0.25,
         token: str | None = None,
     ) -> None:
+        self.max_busy_retries = max_busy_retries
         self._token = token
         self.config = config
         self.table = table
@@ -259,6 +261,7 @@ class PoolRunner:
         sent = ids
         cache_position = 0
         recovery = False
+        busy_rejections = 0
         step = 0
         try:
             while step < max_new_tokens:
@@ -277,6 +280,36 @@ class PoolRunner:
                     )
                 except HopError as exc:
                     failed = route[exc.hop]
+                    if exc.is_busy:
+                        # Not a failure: the device is full and said so before doing any
+                        # work. Ask another copy, and back off if they are all full.
+                        busy_rejections += 1
+                        note(
+                            "busy",
+                            step,
+                            stage=failed.stage,
+                            member=failed.member,
+                            detail="at its limit",
+                        )
+                        if busy_rejections > self.max_busy_retries:
+                            raise PoolUnavailable(
+                                f"every device holding stage {failed.stage + 1} is busy right "
+                                "now. Try again in a moment.",
+                                stage=failed.stage,
+                            ) from exc
+                        avoid.add(failed.member)
+                        self._charge(route, -1)
+                        runner.close()
+                        time.sleep(min(0.5, 0.05 * busy_rejections))
+                        route = self._await_route(
+                            avoid, on_wait=lambda s, at=step: note("waiting", at, stage=s)
+                        )
+                        self._charge(route, +1)
+                        runner = ChainRunner(self._topology(route), token=self._token)
+                        request_id = uuid.uuid4().hex
+                        sent = ids
+                        cache_position = 0
+                        continue
                     logger.warning("%s: switching route (%s)", failed.member, exc)
                     note(
                         "failover",

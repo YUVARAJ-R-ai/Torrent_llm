@@ -41,6 +41,11 @@ class HopError(RuntimeError):
         self.code = code
 
     @property
+    def is_busy(self) -> bool:
+        """True when the node refused a new question because it is at its limit."""
+        return self.code == grpc.StatusCode.RESOURCE_EXHAUSTED
+
+    @property
     def is_node_loss(self) -> bool:
         """True when the node itself is gone or unreachable, not merely unhappy.
 

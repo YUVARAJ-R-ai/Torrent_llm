@@ -53,6 +53,9 @@ class HostedStage:
     inflight: int = 0
     #: Requests it has finished since it came up.
     served: int = 0
+    #: Milliseconds this stage has spent computing for requests since it came up.
+    #: Summed over a device's stages, it is what the device has given the pool.
+    busy_ms: int = 0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> HostedStage:
@@ -79,6 +82,10 @@ class Member:
     hosting: tuple[HostedStage, ...] = ()
     #: Together these order a device's changes: a restart begins a new
     #: incarnation, so its counter starting over is not mistaken for old news.
+    #: Questions asked through this device, and the tokens they produced. What the
+    #: device has *used*, to set beside what it has given.
+    asked: int = 0
+    asked_tokens: int = 0
     incarnation: int = 0
     heartbeat: int = 0
 

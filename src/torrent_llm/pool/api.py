@@ -187,6 +187,7 @@ def create_peer_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         generated = result.ids[0, input_ids.shape[1] :].tolist()
+        daemon.record_asked(len(generated))
         tokens = _per_token_text(tokenizer, generated)
         passes = [dataclasses.asdict(p) for p in result.passes]
         hops = [h for p in result.passes for h in p.hops]

@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import AnimatedBeam from "@/components/AnimatedBeam";
 import Nav from "@/components/Nav";
 import AddDevice from "@/components/pool/AddDevice";
+import Contributions from "@/components/pool/Contributions";
 import Explainer from "@/components/pool/Explainer";
 import Feed from "@/components/pool/Feed";
 import Journey from "@/components/pool/Journey";
@@ -878,18 +879,21 @@ export default function PoolPage() {
           )}
         </div>
 
-        <section
-          className="rounded-2xl px-4 py-3.5"
-          style={{
-            background: "var(--surface-1)",
-            border: "1px solid var(--border)",
-          }}
-        >
-          <h2 className="mb-2.5 text-xs font-medium">
-            What the pool has been doing
-          </h2>
-          <Feed events={events} now={nowSec} />
-        </section>
+        <div className="flex flex-col gap-4">
+          <section
+            className="rounded-2xl px-4 py-3.5"
+            style={{
+              background: "var(--surface-1)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <h2 className="mb-2.5 text-xs font-medium">
+              What the pool has been doing
+            </h2>
+            <Feed events={events} now={nowSec} />
+          </section>
+          {shown && <Contributions members={shown.members} />}
+        </div>
       </div>
     </main>
   );
