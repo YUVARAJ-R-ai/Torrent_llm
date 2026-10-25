@@ -110,8 +110,13 @@ class ShardHost:
         bind: str = "127.0.0.1",
         codec: Codec | None = None,
         token: str | None = None,
+        port_base: int = 0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        #: First port for shard servers: stage ``s`` listens on ``port_base + s``. Zero
+        #: lets the system choose, which suits several devices on one machine; fixed
+        #: ports let a real device open exactly the range its firewall needs.
+        self._port_base = port_base
         self._token = token
         self._specs = specs
         self._loader = loader
@@ -221,7 +226,7 @@ class ShardHost:
                 runtime,
                 self._codec,
                 host=self._bind,
-                port=0,
+                port=self._port_base + held.stage if self._port_base else 0,
                 model_id=self._model_id,
                 interceptors=[
                     *([TokenInterceptor(self._token)] if self._token else []),

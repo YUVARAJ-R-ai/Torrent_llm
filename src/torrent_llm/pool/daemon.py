@@ -32,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
+from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
 from torrent_llm.pool.gossip import choose_targets, exchange
 from torrent_llm.pool.hosting import Loader, ShardHost
 from torrent_llm.pool.members import (
@@ -90,6 +91,9 @@ class PeerDaemon:
         down_after: float = 6.0,
         drain_grace_s: float = DRAIN_GRACE_S,
         warmup_s: float = WARMUP_S,
+        discover: bool = False,
+        discovery_port: int = DISCOVERY_PORT,
+        shard_port_base: int = 0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
@@ -112,9 +116,14 @@ class PeerDaemon:
             model_id=config.model_id,
             bind=self.bind,
             token=token,
+            port_base=shard_port_base,
             clock=clock,
         )
         self.owner_monitor = None
+        self.discover = discover
+        self.discovery_port = discovery_port
+        self.discovery: Discovery | None = None
+        self._reported_clashes: set[str] = set()
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
@@ -137,6 +146,13 @@ class PeerDaemon:
         """Begin the beat in the background."""
         self._thread = threading.Thread(target=self._loop, name="peer-beat", daemon=True)
         self._thread.start()
+        if self.discover:
+            self.discovery = Discovery(
+                Announcement(self.name, self.host, self.control_port, self.pool_id),
+                self._found,
+                port=self.discovery_port,
+            )
+            self.discovery.start()
         if self.profile.watch_owner:
             self.owner_monitor = OwnerMonitor(
                 self.set_owner_busy, busy_mb=self.profile.owner_busy_mb
@@ -147,6 +163,8 @@ class PeerDaemon:
         """Leave the pool. Graceful tells the others so they need not wait to find out."""
         if self.owner_monitor is not None:
             self.owner_monitor.stop()
+        if self.discovery is not None:
+            self.discovery.stop()
         if graceful:
             with self._lock:
                 self._state = LEFT
@@ -172,6 +190,26 @@ class PeerDaemon:
         self._reconcile()
         self.publish()
         self._notice()
+
+    # --- finding others ------------------------------------------------------
+
+    @property
+    def pool_id(self) -> str:
+        """Names the pool, so two groups on one network never mix."""
+        c = self.config
+        return f"{c.model_id}/{c.stages}/{c.replicas}"
+
+    def _found(self, found: Announcement) -> None:
+        """Another device announced itself. If it is new to us, introduce ourselves."""
+        known = {(m.host, m.control_port) for m in self.table.members()}
+        if (found.host, found.port) in known:
+            return
+        theirs = exchange(
+            f"http://{found.address}", self.name, self.table.digest(), token=self.token
+        )
+        if theirs is not None:
+            self.table.merge(theirs)
+            self._record("joined", f"found {found.name} on the network", found.name)
 
     # --- who I am ------------------------------------------------------------
 
@@ -305,6 +343,14 @@ class PeerDaemon:
 
         if self._clock() - self._started < self.warmup_s:
             self._previous = now
+        for address in sorted(self.table.name_clashes - self._reported_clashes):
+            self._reported_clashes.add(address)
+            self._record(
+                "down",
+                f"another device at {address} is also called {self.name}; "
+                "give each device its own --name or they will confuse each other",
+                self.name,
+            )
             return
 
         for name, (liveness, state, stages) in now.items():
