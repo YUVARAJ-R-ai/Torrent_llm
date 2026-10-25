@@ -26,6 +26,7 @@ devices:
     label: Gaming laptop
     device: cuda
     memory_mb: 3200      # room for both halves
+    watch_owner: true    # backs off by itself when another program takes the GPU
     speed: 4.0
     link: {latency_ms: 8, bandwidth_mbps: 300}
 

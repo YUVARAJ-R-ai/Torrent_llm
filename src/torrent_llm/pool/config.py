@@ -47,6 +47,9 @@ class PoolConfig:
     shard_mb: int = 1500
     dtype: str = "float32"
     trust_remote_code: bool = False
+    #: Let a device with spare room take extra copies of a stage when it is faster
+    #: than the slowest device already holding it, so idle capacity is used.
+    use_spare_capacity: bool = True
 
     def __post_init__(self) -> None:
         if self.stages < 1 or self.stages > self.num_layers:
@@ -73,6 +76,7 @@ class PoolConfig:
             "shard_mb",
             "dtype",
             "trust_remote_code",
+            "use_spare_capacity",
         }
         return cls(**{k: v for k, v in raw.items() if k in known})
 
@@ -98,6 +102,9 @@ class DeviceProfile:
     memory_mb: int = 1500
     link: LinkProfile | None = None
     speed: float = 1.0
+    #: Back off automatically when other programs take this much GPU memory.
+    watch_owner: bool = False
+    owner_busy_mb: int = 1500
 
     def slots(self, shard_mb: int) -> int:
         """How many stages this device has memory for."""
@@ -107,7 +114,16 @@ class DeviceProfile:
     def from_dict(cls, raw: dict[str, Any]) -> DeviceProfile:
         fields = dict(raw)
         fields["link"] = LinkProfile.from_dict(fields.get("link"))
-        known = {"name", "label", "device", "memory_mb", "link", "speed"}
+        known = {
+            "name",
+            "label",
+            "device",
+            "memory_mb",
+            "link",
+            "speed",
+            "watch_owner",
+            "owner_busy_mb",
+        }
         unknown = fields.keys() - known
         if unknown:
             raise ValueError(

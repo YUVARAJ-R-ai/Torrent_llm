@@ -138,6 +138,8 @@ def _profile_from_args(args: argparse.Namespace, raw: dict) -> DeviceProfile:
         "device": args.device,
         "memory_mb": args.memory_mb,
         "speed": args.speed,
+        "watch_owner": args.watch_owner,
+        "owner_busy_mb": args.owner_busy_mb,
     }
     base.update({k: v for k, v in overrides.items() if v is not None})
     if args.link_latency_ms is not None or args.link_bandwidth_mbps is not None:
@@ -159,6 +161,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", help="cpu, cuda, mps or auto")
     parser.add_argument("--memory-mb", type=int, help="memory this device lends the pool")
     parser.add_argument("--speed", type=float, help="relative speed, to rank devices")
+    parser.add_argument(
+        "--watch-owner",
+        action="store_true",
+        default=None,
+        help="back off automatically when other programs take much of the GPU",
+    )
+    parser.add_argument(
+        "--owner-busy-mb",
+        type=int,
+        help="GPU memory other programs may hold before this counts as the owner using it",
+    )
     parser.add_argument("--link-latency-ms", type=float)
     parser.add_argument("--link-bandwidth-mbps", type=float)
     parser.add_argument("--host", default="127.0.0.1", help="address others reach this device on")

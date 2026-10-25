@@ -44,6 +44,7 @@ from torrent_llm.pool.members import (
     Member,
     MemberTable,
 )
+from torrent_llm.pool.owner import OwnerMonitor
 from torrent_llm.pool.placement import wanted_stages
 from torrent_llm.pool.runner import PoolRunner
 
@@ -113,6 +114,7 @@ class PeerDaemon:
             token=token,
             clock=clock,
         )
+        self.owner_monitor = None
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
@@ -135,9 +137,16 @@ class PeerDaemon:
         """Begin the beat in the background."""
         self._thread = threading.Thread(target=self._loop, name="peer-beat", daemon=True)
         self._thread.start()
+        if self.profile.watch_owner:
+            self.owner_monitor = OwnerMonitor(
+                self.set_owner_busy, busy_mb=self.profile.owner_busy_mb
+            )
+            self.owner_monitor.start()
 
     def stop(self, *, graceful: bool = True) -> None:
         """Leave the pool. Graceful tells the others so they need not wait to find out."""
+        if self.owner_monitor is not None:
+            self.owner_monitor.stop()
         if graceful:
             with self._lock:
                 self._state = LEFT
