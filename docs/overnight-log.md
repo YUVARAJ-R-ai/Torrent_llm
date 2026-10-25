@@ -33,3 +33,24 @@ What actually happened, newest last. Each checkpoint is a git tag.
   - **A real bug only the real model could show:** RawCodec cast integer token ids to
     fp16, which cannot hold ids above 2048, so the first shard hit a device-side assert.
     The tiny test model (vocab 256) hid it. Fixed at the source with regression tests.
+- **Checkpoint 4: the real-device flow is hardened, and the pool defends itself.** 448 tests
+  pass (the suite now takes two minutes). Lint clean, Python and dashboard.
+  - **Found and fixed by checking the Windows path by eye:** Ctrl+C could not stop a device on
+    Windows (a wait with no timeout is uninterruptible there); `join.ps1`'s own probes would
+    have been fatal under PowerShell 5.1's stderr handling. Neither could be run here.
+  - **Found by the chaos test:** with a seeded storm of crashes, polite leaves, newcomers and
+    owners reclaiming GPUs while three clients asked continuously, no request failed and no
+    answer was wrong, over several seeds and about 200 answers each. It also exposed that a
+    device that had found nobody blamed the pool; it now says it is not connected and points
+    at `--join` and `--check`.
+  - **New:** overload protection (a full device refuses new questions, never ones in progress,
+    and requesters route around it), contribution accounting (compute given and tokens asked,
+    shown on the page), the VPN-address warning in `--check`, `scripts/pool_check.py`
+    (asks every device the same question and checks they agree), the OS shown on cards when
+    a pool mixes systems, the pool token accepted from the page's address.
+  - **A real flaw found by thinking about the learned codec:** the requester decoded each
+    hidden state and encoded it again for the next shard, applying the codec twice. Harmless
+    for a projection, wrong for a learned codec. Hops now forward the compressed reply
+    untouched; tests over real gRPC servers fail without the change.
+  - **My own numbers were optimistic.** On a 95-question held-out set (up from 30) the
+    baseline is 88% and PCA at 4x scores 77%, not the 88% the first 30 easier questions gave.
