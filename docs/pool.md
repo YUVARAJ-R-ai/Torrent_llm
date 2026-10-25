@@ -237,7 +237,13 @@ for building and demonstrating the page, not for measuring anything.
 - **Cross the open internet.** Devices find each other by broadcast on one network, or
   by being told one address (over Tailscale for different networks). The DHT (issue #15)
   would replace that.
-- **Download weights for you.** Each device must be able to load the model.
+- **Share weights between devices.** Each device downloads the model itself the first
+  time (`scripts/setup.sh` does it), about 1.5 GB each. Two laptops on one hotspot each pull
+  it from the internet.
+- **Enforce fairness.** The page shows who gave and who used, but nothing is withheld from a
+  device that took more than it gave (a credit scheme is issue #19).
+- **Run models bigger than Qwen3-0.6B.** Every measurement here, and the compression weights,
+  are for that one model. A larger one needs its own calibration and more memory per device.
 
 ## Where things are
 
@@ -249,4 +255,4 @@ for building and demonstrating the page, not for measuring anything.
 | `scripts/pool_load.py` | many questions at once |
 | `scripts/mock_pool.py` | the same API with no model, for working on the dashboard |
 | `dashboard/app/pool/` | the Pool page |
-| `tests/test_pool_core.py`, `test_pool.py`, `test_owner.py`, `test_lab.py` | unit tests, whole-pool tests over real sockets |
+| `tests/test_pool_core.py`, `test_pool.py`, `test_chaos.py`, `test_admission_accounting.py`, `test_owner.py`, `test_lab.py`, `test_net_discovery.py`, `test_settings.py` | unit tests, whole-pool tests over real sockets, and a seeded storm of failures |
