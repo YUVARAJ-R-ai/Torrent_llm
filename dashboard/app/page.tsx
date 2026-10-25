@@ -15,12 +15,15 @@
  */
 
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
-import { Play, Sparkles, UserRound, Zap } from "lucide-react";
+import { Gamepad2, Play, Sparkles, UserRound, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import AnimatedBeam from "@/components/AnimatedBeam";
 import Nav from "@/components/Nav";
+import Explainer from "@/components/pool/Explainer";
 import Feed from "@/components/pool/Feed";
+import Journey from "@/components/pool/Journey";
+import WaitingForPool from "@/components/pool/Waiting";
 import {
   BenchTile,
   CopyCard,
@@ -163,6 +166,7 @@ export default function PoolPage() {
     setNote(null);
     setPhase("playing");
 
+    const lostSoFar = new Set<string>();
     for (const step of buildTimeline(run)) {
       // A newer run cancels this one between steps.
       if (runId.current !== id) return;
@@ -196,8 +200,12 @@ export default function PoolPage() {
         setTotals((t) => ({ ...t, tokens: t.tokens + 1 }));
       } else if (step.kind === "lost") {
         setBusyKey(null);
-        setLost((prev) => new Set(prev).add(step.member));
-        setTotals((t) => ({ ...t, lost: t.lost + 1 }));
+        // Counted once per device, however many of its stages were on the route.
+        if (!lostSoFar.has(step.member)) {
+          lostSoFar.add(step.member);
+          setTotals((t) => ({ ...t, lost: lostSoFar.size }));
+        }
+        setLost(new Set(lostSoFar));
         setNote(
           `${nameOfIn(startView, step.member)} stopped answering. Finding another copy…`,
         );
@@ -352,6 +360,45 @@ export default function PoolPage() {
   const nowSec = view?.now ?? 0;
   const crashAvailable = !!lab && lab.some((d) => d.running);
 
+  // "The owner needs the device": bring back one that is away, or send the
+  // fastest working one away. Works with or without a lab, since it is the
+  // owner's own control rather than the lab's.
+  const ownerScenario = useMemo(() => {
+    if (!view) return null;
+    const away = view.members.find(
+      (m) =>
+        m.liveness === "alive" &&
+        (m.state === "draining" || m.state === "away"),
+    );
+    if (away) {
+      return {
+        label: `${away.label || away.name}'s owner is done`,
+        hint: "Lend the device to the pool again",
+        run: () =>
+          void pool
+            .setOwnerBusy(away, false)
+            .then(pool.refresh, () => undefined),
+      };
+    }
+    const fastest = view.members
+      .filter(
+        (m) =>
+          m.liveness === "alive" &&
+          m.state === "active" &&
+          m.hosting.length > 0,
+      )
+      .sort((a, b) => b.speed - a.speed)[0];
+    if (!fastest) return null;
+    return {
+      label: `Owner starts a game on ${fastest.label || fastest.name}`,
+      hint: "The device hands its work to others, then frees its memory",
+      run: () =>
+        void pool
+          .setOwnerBusy(fastest, true)
+          .then(pool.refresh, () => undefined),
+    };
+  }, [view, pool]);
+
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-8 sm:px-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -369,6 +416,8 @@ export default function PoolPage() {
         </div>
         <Nav current="/" />
       </header>
+
+      <Explainer />
 
       {/* ---- health ---- */}
       <section
@@ -436,6 +485,22 @@ export default function PoolPage() {
             border: "1px solid var(--border)",
           }}
         >
+          <p
+            className="mb-4 text-xs"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            A question goes left to right and uses{" "}
+            <strong
+              className="font-medium"
+              style={{ color: "var(--text-primary)" }}
+            >
+              one device from each column
+            </strong>
+            . Several devices in a column means any of them can do that part.
+          </p>
+
+          {!shown && <WaitingForPool error={error} />}
+
           <AnimatePresence>
             {note && (
               <motion.div
@@ -650,28 +715,49 @@ export default function PoolPage() {
           <Play size={15} />
           {phase === "running" ? "Asking…" : "Ask"}
         </button>
-        {crashAvailable && (
-          <button
-            type="button"
-            disabled={
-              phase === "running" ||
-              phase === "playing" ||
-              !view ||
-              view.health === "down"
-            }
-            onClick={() => void run(true)}
-            title="Asks for a long answer, then crashes a device partway through it"
-            className="flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm transition-transform active:scale-[0.98] disabled:opacity-50"
-            style={{
-              border: "1px solid var(--status-critical)",
-              color: "var(--status-critical)",
-            }}
-          >
-            <Zap size={15} />
-            Ask, then crash a device
-          </button>
-        )}
       </form>
+
+      {(crashAvailable || ownerScenario) && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span style={{ color: "var(--text-muted)" }}>Or try:</span>
+          {crashAvailable && (
+            <button
+              type="button"
+              disabled={
+                phase === "running" ||
+                phase === "playing" ||
+                !view ||
+                view.health === "down"
+              }
+              onClick={() => void run(true)}
+              title="Asks for a long answer, then crashes a device partway through it"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-transform active:scale-[0.98] disabled:opacity-50"
+              style={{
+                border: "1px solid var(--status-critical)",
+                color: "var(--status-critical)",
+              }}
+            >
+              <Zap size={13} />
+              Crash a device mid-answer
+            </button>
+          )}
+          {ownerScenario && (
+            <button
+              type="button"
+              onClick={ownerScenario.run}
+              title={ownerScenario.hint}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-transform active:scale-[0.98]"
+              style={{
+                border: "1px solid var(--status-warn)",
+                color: "var(--text-primary)",
+              }}
+            >
+              <Gamepad2 size={13} />
+              {ownerScenario.label}
+            </button>
+          )}
+        </div>
+      )}
 
       {runError && (
         <div
@@ -756,6 +842,12 @@ export default function PoolPage() {
               </motion.section>
             )}
           </AnimatePresence>
+          {result && phase === "done" && (
+            <Journey
+              result={result}
+              nameOf={(member) => (view ? nameOfIn(view, member) : member)}
+            />
+          )}
           {phase === "playing" && (
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>
               Replaying the measured run, slowed down so each transfer is

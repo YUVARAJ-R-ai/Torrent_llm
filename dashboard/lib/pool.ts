@@ -283,9 +283,7 @@ export function usePool(intervalMs = 1000) {
     setState((prev) => ({
       view: view ?? prev.view,
       gateway: view ? view.self : null,
-      events: events.length
-        ? [...prev.events, ...events].slice(-60)
-        : prev.events,
+      events: events.length ? mergeEvents(prev.events, events) : prev.events,
       lab,
       error: view ? null : "No device in the pool can be reached.",
     }));
@@ -373,4 +371,19 @@ export function usePool(intervalMs = 1000) {
   );
 
   return { ...state, generate, setOwnerBusy, labAction, refresh: poll };
+}
+
+/**
+ * Add new events to the feed without repeating any.
+ *
+ * Two polls can be in flight at once (the timer and a refresh after a click), and
+ * both ask for events since the same moment, so the same event can arrive twice.
+ */
+function mergeEvents(
+  have: ActivityEvent[],
+  incoming: ActivityEvent[],
+): ActivityEvent[] {
+  const seen = new Set(have.map((e) => `${e.t}|${e.text}`));
+  const fresh = incoming.filter((e) => !seen.has(`${e.t}|${e.text}`));
+  return [...have, ...fresh].slice(-60);
 }

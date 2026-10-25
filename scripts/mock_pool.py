@@ -333,6 +333,10 @@ class MockPool:
                         "t": time.monotonic() - started,
                     }
                 )
+                # Like the real pool: a request that failed against a device knows
+                # more than the heartbeat timer, so it stops using it at once.
+                with self.lock:
+                    self.devices[lost.member].crashed_at = time.time() - DEAD_AFTER_S
                 time.sleep(0.3)
                 route = self._route(wait=True)
                 recovery = True

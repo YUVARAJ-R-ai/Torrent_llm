@@ -11,7 +11,7 @@
  */
 
 import { motion } from "motion/react";
-import { Gamepad2, Play, Power, Zap } from "lucide-react";
+import { Cpu, Gamepad2, Gpu, Play, Power, Zap } from "lucide-react";
 import { forwardRef, type ReactNode } from "react";
 
 import type { HostedStage, LabDevice, PoolMember } from "@/lib/pool";
@@ -52,6 +52,9 @@ export function describeDevice(
     return { text: "Handing over…", tone: "warn" };
   if (member.state === "away")
     return { text: "Owner is using it", tone: "idle" };
+  if (!hosted && member.slots === 0) {
+    return { text: "Not enough memory lent for a stage", tone: "warn" };
+  }
   if (hosted?.status === "loading")
     return { text: "Loading its share…", tone: "warn" };
   if (hosted?.status === "ready") return { text: "Serving", tone: "good" };
@@ -75,13 +78,20 @@ function Dot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
   );
 }
 
-function Chip({ children }: { children: ReactNode }) {
+/** The hardware a device runs on, with an icon, so "fast" and "slow" are visible at a glance. */
+function HardwareChip({ device }: { device: string }) {
+  const gpu = device.startsWith("cuda") || device === "mps";
   return (
     <span
-      className="tabular rounded px-1.5 py-0.5 text-[10px] tracking-wide"
-      style={{ background: "var(--surface-1)", color: "var(--text-muted)" }}
+      className="tabular flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] tracking-wide"
+      style={{
+        background: "var(--surface-1)",
+        color: gpu ? "var(--text-primary)" : "var(--text-muted)",
+      }}
+      title={gpu ? "Runs on a GPU" : "Runs on a CPU"}
     >
-      {children}
+      {gpu ? <Gpu size={11} aria-hidden /> : <Cpu size={11} aria-hidden />}
+      {device.toUpperCase()}
     </span>
   );
 }
@@ -248,8 +258,8 @@ export const CopyCard = forwardRef<
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <Chip>{member.device.toUpperCase()}</Chip>
-          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <HardwareChip device={member.device} />
+          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
             <ActionButtons member={member} lab={lab} actions={actions} />
           </div>
         </div>
@@ -326,8 +336,8 @@ export const BenchTile = forwardRef<
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <Chip>{(member?.device ?? lab?.device ?? "").toUpperCase()}</Chip>
-          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <HardwareChip device={member?.device ?? lab?.device ?? "cpu"} />
+          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
             <ActionButtons member={member} lab={lab} actions={actions} />
           </div>
         </div>
