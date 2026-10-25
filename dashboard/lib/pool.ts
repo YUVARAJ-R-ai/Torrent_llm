@@ -233,13 +233,27 @@ export function usePool(intervalMs = 1000) {
       }
     }
 
+    if (!view) {
+      for (const url of SEEDS.filter((u) => !order.includes(u))) {
+        try {
+          view = await getJson<PoolView>(`${url}/pool`);
+          base.current = url;
+          break;
+        } catch {
+          // Try the next seed.
+        }
+      }
+    }
+
     let events: ActivityEvent[] = [];
     if (view && base.current) {
+      // Only devices believed alive: asking a dead one's address would fill the
+      // console with refused connections. The seeds come back in if nothing
+      // else answers (see the fallback in poll).
       known.current = [
         ...new Set([
           base.current,
           ...view.members.filter((m) => m.liveness === "alive").map(memberUrl),
-          ...SEEDS,
         ]),
       ];
       try {
@@ -291,34 +305,53 @@ export function usePool(intervalMs = 1000) {
     };
   }, [poll, intervalMs]);
 
-  const generate = useCallback(async (prompt: string, maxNewTokens = 40) => {
-    const order = [base.current, ...known.current].filter(
-      (u, i, all): u is string => !!u && all.indexOf(u) === i,
-    );
-    let lastError: unknown = new PoolError(
-      "No device in the pool can be reached.",
-      0,
-    );
-    for (const url of order) {
-      try {
-        return await getJson<PoolGenerateResult>(
-          `${url}/generate`,
-          {
-            method: "POST",
-            body: JSON.stringify({ prompt, max_new_tokens: maxNewTokens }),
-          },
-          120_000,
-        );
-      } catch (error) {
-        // A device that answered with an error is the pool's honest answer
-        // (e.g. a stage has no copies); only a device that did not answer at
-        // all is worth working around.
-        if (error instanceof PoolError) throw error;
-        lastError = error;
+  const generate = useCallback(
+    async (
+      prompt: string,
+      options: {
+        maxNewTokens?: number;
+        systemPrompt?: string;
+        /** Ask this device specifically (its URL), instead of whichever answers. */
+        via?: string;
+      } = {},
+    ) => {
+      const order = options.via
+        ? [options.via]
+        : [base.current, ...known.current].filter(
+            (u, i, all): u is string => !!u && all.indexOf(u) === i,
+          );
+      let lastError: unknown = new PoolError(
+        "No device in the pool can be reached.",
+        0,
+      );
+      for (const url of order) {
+        try {
+          return await getJson<PoolGenerateResult>(
+            `${url}/generate`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                prompt,
+                max_new_tokens: options.maxNewTokens ?? 40,
+                ...(options.systemPrompt !== undefined
+                  ? { system_prompt: options.systemPrompt }
+                  : {}),
+              }),
+            },
+            120_000,
+          );
+        } catch (error) {
+          // A device that answered with an error is the pool's honest answer
+          // (e.g. a stage has no copies); only a device that did not answer at
+          // all is worth working around.
+          if (error instanceof PoolError) throw error;
+          lastError = error;
+        }
       }
-    }
-    throw lastError;
-  }, []);
+      throw lastError;
+    },
+    [],
+  );
 
   const setOwnerBusy = useCallback(
     (member: PoolMember, busy: boolean) =>

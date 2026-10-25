@@ -14,7 +14,6 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { Laptop, MessageSquare, Play, RotateCcw, Sparkles } from "lucide-react";
-import Link from "next/link";
 import {
   forwardRef,
   useCallback,
@@ -25,6 +24,7 @@ import {
 } from "react";
 
 import AnimatedBeam from "@/components/AnimatedBeam";
+import Nav from "@/components/Nav";
 import { ApiError, api, type GenerateResult, type Topology } from "@/lib/api";
 import { formatBytes, formatMs } from "@/lib/format";
 import { buildTimeline, type Step } from "@/lib/replay";
@@ -223,13 +223,7 @@ export default function Demo() {
             One language model, split across two devices.
           </p>
         </div>
-        <Link
-          href="/details"
-          className="text-xs underline-offset-2 hover:underline"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Detailed metrics
-        </Link>
+        <Nav current="/" />
       </header>
 
       {/* ---- the stage ---- */}

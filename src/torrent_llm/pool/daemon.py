@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 #: The beat of the daemon loop.
 TICK_S = 0.5
+#: A device that has just started learns about everyone within its first few
+#: beats. Reporting each of them as "joined" would read as news when it is only
+#: the device catching up, so it stays quiet for this long.
+WARMUP_S = 4.0
 #: How long a draining device waits for a replacement before letting go anyway.
 #: Bounded because the owner asked for the device back and should get it.
 DRAIN_GRACE_S = 10.0
@@ -84,6 +88,7 @@ class PeerDaemon:
         suspect_after: float = 2.5,
         down_after: float = 6.0,
         drain_grace_s: float = DRAIN_GRACE_S,
+        warmup_s: float = WARMUP_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
@@ -95,6 +100,7 @@ class PeerDaemon:
         self.token = token
         self.tick_s = tick_s
         self.drain_grace_s = drain_grace_s
+        self.warmup_s = warmup_s
 
         self.table = MemberTable(
             profile.name, suspect_after=suspect_after, down_after=down_after, clock=clock
@@ -114,6 +120,7 @@ class PeerDaemon:
         self.events: deque[Event] = deque(maxlen=80)
         self._previous: dict[str, tuple[str, str, tuple]] = {}
         self._clock = clock
+        self._started = clock()
         self._rng = random.Random()
         self.publish()
 
@@ -281,6 +288,10 @@ class PeerDaemon:
         for member, liveness in self.table.snapshot():
             stages = tuple(sorted((h.stage, h.status) for h in member.hosting))
             now[member.name] = (liveness, member.state, stages)
+
+        if self._clock() - self._started < self.warmup_s:
+            self._previous = now
+            return
 
         for name, (liveness, state, stages) in now.items():
             if name == self.name and name not in self._previous:

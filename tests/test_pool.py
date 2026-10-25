@@ -22,7 +22,13 @@ from torrent_llm.pool.members import ACTIVE, AWAY, DRAINING
 from torrent_llm.pool.peer import launch
 from torrent_llm.shard import ShardRuntime
 
-FAST = {"tick_s": 0.1, "suspect_after": 0.8, "down_after": 1.6, "drain_grace_s": 3.0}
+FAST = {
+    "tick_s": 0.1,
+    "suspect_after": 0.8,
+    "down_after": 1.6,
+    "drain_grace_s": 3.0,
+    "warmup_s": 0.0,
+}
 
 
 class CharTokenizer:
@@ -216,6 +222,22 @@ def test_concurrent_requests_are_spread_across_the_copies(pool):
 
     # Twelve requests across two copies of each stage should touch more than one.
     assert len(seen) > 2
+
+
+def test_a_device_that_just_started_does_not_announce_everyone_as_new(pool):
+    four_devices(pool)
+    late = pool.add("late")
+    late.daemon.warmup_s = 30.0  # as in real use; the fixture default is zero
+    late.daemon._started = time_now()
+
+    wait_for(lambda: len(pool.view("late")["members"]) == 5, what="late to learn the pool")
+    time.sleep(0.5)
+
+    assert [e for e in late.daemon.recent_events() if e["kind"] == "joined"] == []
+
+
+def time_now():
+    return time.monotonic()
 
 
 # --- surviving loss ------------------------------------------------------------------

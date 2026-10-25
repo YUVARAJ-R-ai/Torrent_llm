@@ -14,7 +14,7 @@
  * a wrong number that looks reasonable.
  */
 
-import Link from "next/link";
+import Nav from "@/components/Nav";
 import { useCallback, useEffect, useState } from "react";
 
 import HopTable from "@/components/HopTable";
@@ -93,11 +93,11 @@ export default function Dashboard() {
         </h1>
         <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
           Testing and visualization for the layer-sharded inference chain. Not
-          the final interface.{" "}
-          <Link href="/" className="underline underline-offset-2">
-            Back to the demo
-          </Link>
+          the final interface.
         </p>
+        <div className="mt-3">
+          <Nav current="/details" />
+        </div>
       </header>
 
       <div className="flex flex-col gap-5">
@@ -186,7 +186,9 @@ export default function Dashboard() {
                 border: "1px solid var(--border)",
               }}
             >
-              <span style={{ color: "var(--text-muted)" }}>{result.prompt}</span>
+              <span style={{ color: "var(--text-muted)" }}>
+                {result.prompt}
+              </span>
               <span style={{ color: "var(--text-primary)" }}>
                 {result.completion}
               </span>
@@ -245,7 +247,9 @@ function TopologyPanel({
           <p>{error}</p>
           <p className="mt-2" style={{ color: "var(--text-secondary)" }}>
             Start the chain with{" "}
-            <code>torrent-shard --config configs/local-2shard.yaml --index 0</code>{" "}
+            <code>
+              torrent-shard --config configs/local-2shard.yaml --index 0
+            </code>{" "}
             (and <code>--index 1</code>), then{" "}
             <code>torrent-api --config configs/local-2shard.yaml</code>.
           </p>
