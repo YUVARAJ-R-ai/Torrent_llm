@@ -47,17 +47,24 @@ export default function Dashboard() {
   const [result, setResult] = useState<GenerateResult | null>(null);
   const [comparison, setComparison] = useState<CacheComparison | null>(null);
 
-  const loadTopology = useCallback(async () => {
-    setTopologyError(null);
-    try {
-      setTopology(await api.topology());
-    } catch (error) {
-      setTopology(null);
-      setTopologyError(
-        error instanceof ApiError ? error.message : String(error),
-      );
-    }
-  }, []);
+  // State is only set once the request settles, never synchronously, so this
+  // is safe to call from an effect.
+  const loadTopology = useCallback(
+    () =>
+      api.topology().then(
+        (t) => {
+          setTopology(t);
+          setTopologyError(null);
+        },
+        (error) => {
+          setTopology(null);
+          setTopologyError(
+            error instanceof ApiError ? error.message : String(error),
+          );
+        },
+      ),
+    [],
+  );
 
   useEffect(() => {
     void loadTopology();
