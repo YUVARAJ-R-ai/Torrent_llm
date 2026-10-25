@@ -118,6 +118,28 @@ def test_generation_stops_at_a_stop_token_without_appending_it(served_chain, inp
     assert len(passes) == first_stop + 1
 
 
+def test_a_dead_node_is_reported_with_the_hop_it_was(served_chain, input_ids):
+    from torrent_llm.runner import HopError
+
+    dead = TopologyConfig.from_dict(
+        {
+            "model_id": "tiny",
+            "num_layers": served_chain.num_layers,
+            "nodes": [
+                {"address": served_chain.nodes[0].address},
+                {"address": "127.0.0.1:1"},  # nothing listens here
+            ],
+        }
+    )
+
+    with ChainRunner(dead) as runner, pytest.raises(HopError) as excinfo:
+        runner.forward(input_ids)
+
+    assert excinfo.value.hop == 1
+    assert excinfo.value.address == "127.0.0.1:1"
+    assert excinfo.value.is_node_loss
+
+
 # --- topology config ---
 
 
