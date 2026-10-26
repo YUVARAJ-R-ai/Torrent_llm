@@ -20,6 +20,7 @@ owner's button still works.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -93,6 +94,11 @@ def belongs_to_pool(pid: int) -> bool:
     on Linux is under ``/proc``. Where that is unavailable the process is assumed
     to be someone else's, which errs toward lending less.
     """
+    # This very process holds the device's own model, on every operating system.
+    # (Reading another process's command line below only works on Linux, so without
+    # this a Windows device would mistake itself for its owner and back off.)
+    if pid == os.getpid():
+        return True
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
     except OSError:

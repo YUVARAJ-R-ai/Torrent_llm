@@ -82,6 +82,11 @@ torrent-peer --pool pool.yaml --name my-laptop --memory-mb 3200 --join <any-devi
 Give every device the same `pool.yaml` model settings, and `--join` the address of
 anyone already in the pool. It learns the rest from them.
 
+## Running a pool on real devices
+
+See [real-devices.md](real-devices.md): three steps (clone, `scripts/join.sh`, open the page), no
+addresses to type. What follows is the same thing spelled out by hand.
+
 ## Running a pool without the lab
 
 ```bash
@@ -159,6 +164,32 @@ Tried on the lab: starting an unrelated 2.4 GB CUDA program made the gaming devi
 hand over to two CPU devices in about 6 s with the pool staying healthy, and it was
 lending again about 6 s after the program ended.
 
+### When a device is full
+
+A device with too much in flight refuses a *new* question, before doing any work, and
+the requester asks another copy. It backs off briefly if every copy is full, and says so
+plainly if they stay full ("every device holding stage 1 is busy right now"). A question
+already under way is never refused: it has spent effort on every stage it passed, and
+cutting it off would make an overload worse. The default limit is 8 questions at once on a
+GPU and 3 on a CPU; change it with `--max-requests`.
+
+### Keeping score
+
+Each device reports the milliseconds it has spent computing for others and the tokens it
+has asked for, as part of its entry in the pool, and the page shows them side by side
+("Who is carrying the pool"). Set against each other they say whether a device is carrying
+the others or being carried. This is accounting only: nothing is withheld from a device
+that has taken more than it gave (issue #19 asks for a credit scheme on top of this).
+
+### Compression
+
+`configs/pool-compressed.yaml` shrinks the hidden states 8x on the wire using weights
+calibrated on real activations (see [compression.md](compression.md): 4x to 8x costs a few
+points of answer quality, 16x and beyond does not work). Everyone in the pool must use the
+same file; devices with different settings refuse each other and say why. On two real
+devices (one GPU, one CPU) the hidden-state traffic was exactly 8x smaller and every answer
+was right.
+
 ### Taking a device back
 
 `POST /admin/owner {"busy": true}` starts a drain. The device stops taking new
@@ -203,19 +234,25 @@ for building and demonstrating the page, not for measuring anything.
   is not detected.
 - **Detect an owner without an NVIDIA GPU.** Automatic detection reads `nvidia-smi`.
   Other hardware uses the button.
-- **Compress activations.** The low-rank compressor is not in the pool's path.
-- **Cross the open internet.** Discovery is "know one address". The DHT (issue #15)
-  would replace it.
-- **Download weights for you.** Each device must be able to load the model.
+- **Cross the open internet.** Devices find each other by broadcast on one network, or
+  by being told one address (over Tailscale for different networks). The DHT (issue #15)
+  would replace that.
+- **Share weights between devices.** Each device downloads the model itself the first
+  time (`scripts/setup.sh` does it), about 1.5 GB each. Two laptops on one hotspot each pull
+  it from the internet.
+- **Enforce fairness.** The page shows who gave and who used, but nothing is withheld from a
+  device that took more than it gave (a credit scheme is issue #19).
+- **Run models bigger than Qwen3-0.6B.** Every measurement here, and the compression weights,
+  are for that one model. A larger one needs its own calibration and more memory per device.
 
 ## Where things are
 
 | | |
 |---|---|
-| `src/torrent_llm/pool/` | the pool: `members`, `placement`, `router`, `runner`, `hosting`, `daemon`, `owner`, `api`, `peer`, `lab` |
+| `src/torrent_llm/pool/` | the pool: `members`, `placement`, `router`, `runner`, `hosting`, `daemon`, `owner`, `net`, `discovery`, `settings`, `doctor`, `api`, `peer`, `lab` |
 | `configs/pool-lab.yaml` | the lab's six pretend devices |
 | `scripts/pool.sh` | start the lab and dashboard |
 | `scripts/pool_load.py` | many questions at once |
 | `scripts/mock_pool.py` | the same API with no model, for working on the dashboard |
 | `dashboard/app/pool/` | the Pool page |
-| `tests/test_pool_core.py`, `test_pool.py`, `test_owner.py`, `test_lab.py` | unit tests, whole-pool tests over real sockets |
+| `tests/test_pool_core.py`, `test_pool.py`, `test_chaos.py`, `test_admission_accounting.py`, `test_owner.py`, `test_lab.py`, `test_net_discovery.py`, `test_settings.py` | unit tests, whole-pool tests over real sockets, and a seeded storm of failures |

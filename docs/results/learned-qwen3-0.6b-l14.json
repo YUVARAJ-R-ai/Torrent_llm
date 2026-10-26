@@ -1,0 +1,69 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "boundary": 14,
+  "fp16_wire": true,
+  "baseline": {
+    "perplexity": 40.39,
+    "answers_right": 0.884
+  },
+  "settings": {
+    "steps": 1000,
+    "batch": 4,
+    "chats": 6,
+    "chat_weight": 2.0,
+    "lr": 0.0003
+  },
+  "ranks": [
+    {
+      "rank": 256,
+      "pca": {
+        "perplexity": 42.271,
+        "answers_right": 0.779,
+        "relative_error": 0.0358,
+        "compression": 8.0
+      },
+      "learned": {
+        "perplexity": 42.109,
+        "answers_right": 0.779,
+        "relative_error": 0.0421,
+        "compression": 8.0
+      },
+      "steps": 1000,
+      "weights": "weights/qwen3-0.6b-l14-r256-learned.safetensors"
+    },
+    {
+      "rank": 128,
+      "pca": {
+        "perplexity": 50.417,
+        "answers_right": 0.516,
+        "relative_error": 0.0489,
+        "compression": 16.0
+      },
+      "learned": {
+        "perplexity": 46.923,
+        "answers_right": 0.579,
+        "relative_error": 0.0675,
+        "compression": 16.0
+      },
+      "steps": 1000,
+      "weights": "weights/qwen3-0.6b-l14-r128-learned.safetensors"
+    },
+    {
+      "rank": 64,
+      "pca": {
+        "perplexity": 87.525,
+        "answers_right": 0.116,
+        "relative_error": 0.0603,
+        "compression": 32.0
+      },
+      "learned": {
+        "perplexity": 62.783,
+        "answers_right": 0.337,
+        "relative_error": 0.1017,
+        "compression": 32.0
+      },
+      "steps": 1000,
+      "weights": "weights/qwen3-0.6b-l14-r64-learned.safetensors"
+    }
+  ]
+}

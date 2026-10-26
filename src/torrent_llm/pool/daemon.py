@@ -31,8 +31,10 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from torrent_llm.codec import get_codec
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
-from torrent_llm.pool.gossip import choose_targets, exchange
+from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
+from torrent_llm.pool.gossip import PoolMismatch, choose_targets, exchange
 from torrent_llm.pool.hosting import Loader, ShardHost
 from torrent_llm.pool.members import (
     ACTIVE,
@@ -47,6 +49,7 @@ from torrent_llm.pool.members import (
 from torrent_llm.pool.owner import OwnerMonitor
 from torrent_llm.pool.placement import wanted_stages
 from torrent_llm.pool.runner import PoolRunner
+from torrent_llm.shard import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,9 @@ class PeerDaemon:
         down_after: float = 6.0,
         drain_grace_s: float = DRAIN_GRACE_S,
         warmup_s: float = WARMUP_S,
+        discover: bool = False,
+        discovery_port: int = DISCOVERY_PORT,
+        shard_port_base: int = 0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
@@ -112,9 +118,20 @@ class PeerDaemon:
             model_id=config.model_id,
             bind=self.bind,
             token=token,
+            codec=get_codec(config.codec, **config.codec_args),
+            port_base=shard_port_base,
+            max_requests=profile.request_limit(resolve_device(profile.device)),
             clock=clock,
         )
         self.owner_monitor = None
+        self.discover = discover
+        self.discovery_port = discovery_port
+        self.discovery: Discovery | None = None
+        self._reported_clashes: set[str] = set()
+        self._announced = False
+        self._asked = 0
+        self._asked_tokens = 0
+        self._reported_mismatches: set[str] = set()
         self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
 
         self._incarnation = time.time_ns()
@@ -137,6 +154,13 @@ class PeerDaemon:
         """Begin the beat in the background."""
         self._thread = threading.Thread(target=self._loop, name="peer-beat", daemon=True)
         self._thread.start()
+        if self.discover:
+            self.discovery = Discovery(
+                Announcement(self.name, self.host, self.control_port, self.pool_id),
+                self._found,
+                port=self.discovery_port,
+            )
+            self.discovery.start()
         if self.profile.watch_owner:
             self.owner_monitor = OwnerMonitor(
                 self.set_owner_busy, busy_mb=self.profile.owner_busy_mb
@@ -147,6 +171,8 @@ class PeerDaemon:
         """Leave the pool. Graceful tells the others so they need not wait to find out."""
         if self.owner_monitor is not None:
             self.owner_monitor.stop()
+        if self.discovery is not None:
+            self.discovery.stop()
         if graceful:
             with self._lock:
                 self._state = LEFT
@@ -173,6 +199,34 @@ class PeerDaemon:
         self.publish()
         self._notice()
 
+    # --- finding others ------------------------------------------------------
+
+    @property
+    def pool_id(self) -> str:
+        """Names the pool, so two groups on one network never mix."""
+        c = self.config
+        return f"{c.model_id}/{c.stages}/{c.replicas}/{c.codec_signature}"
+
+    def _found(self, found: Announcement) -> None:
+        """Another device announced itself. If it is new to us, introduce ourselves."""
+        known = {(m.host, m.control_port) for m in self.table.members()}
+        if (found.host, found.port) in known:
+            return
+        try:
+            theirs = exchange(
+                f"http://{found.address}",
+                self.name,
+                self.table.digest(),
+                token=self.token,
+                pool_id=self.pool_id,
+            )
+        except PoolMismatch:
+            self._report_mismatch(f"http://{found.address}", found.name)
+            return
+        if theirs is not None:
+            self.table.merge(theirs)
+            self._record("joined", f"found {found.name} on the network", found.name)
+
     # --- who I am ------------------------------------------------------------
 
     @property
@@ -185,8 +239,6 @@ class PeerDaemon:
 
     def publish(self) -> Member:
         """Write my own entry, with a heartbeat that has moved on."""
-        from torrent_llm.shard import resolve_device
-
         with self._lock:
             self._heartbeat += 1
             link = self.profile.link.describe() if self.profile.link else None
@@ -204,6 +256,8 @@ class PeerDaemon:
                 link=link,
                 state=self._state,
                 hosting=self.shards.hosting(),
+                asked=self._asked,
+                asked_tokens=self._asked_tokens,
                 incarnation=self._incarnation,
                 heartbeat=self._heartbeat,
             )
@@ -215,9 +269,25 @@ class PeerDaemon:
     def _gossip(self) -> None:
         digest = self.table.digest()
         for url in choose_targets(self.table, self.join, rng=self._rng):
-            theirs = exchange(url, self.name, digest, token=self.token)
+            try:
+                theirs = exchange(url, self.name, digest, token=self.token, pool_id=self.pool_id)
+            except PoolMismatch:
+                self._report_mismatch(url)
+                continue
             if theirs is not None:
                 self.table.merge(theirs)
+
+    def _report_mismatch(self, url: str, name: str | None = None) -> None:
+        """Say once that another device runs different settings, and so is ignored."""
+        if url in self._reported_mismatches:
+            return
+        self._reported_mismatches.add(url)
+        self._record(
+            "down",
+            f"{name or url} is running different pool settings (model, stages or codec), "
+            "so it was ignored. Everyone must use the same configs/pool.yaml",
+            name,
+        )
 
     def receive(self, sender: str, incoming: list[Member]) -> list[dict]:
         """Another device pushed its table; merge it and answer with mine."""
@@ -273,6 +343,12 @@ class PeerDaemon:
             return True
         return waited >= self.drain_grace_s
 
+    def record_asked(self, tokens: int) -> None:
+        """A question was answered through this device: count what it used."""
+        with self._lock:
+            self._asked += 1
+            self._asked_tokens += tokens
+
     # --- the owner's controls --------------------------------------------------
 
     def set_owner_busy(self, busy: bool) -> str:
@@ -303,9 +379,30 @@ class PeerDaemon:
             stages = tuple(sorted((h.stage, h.status) for h in member.hosting))
             now[member.name] = (liveness, member.state, stages)
 
+        for address in sorted(self.table.name_clashes - self._reported_clashes):
+            self._reported_clashes.add(address)
+            self._record(
+                "down",
+                f"another device at {address} is also called {self.name}; "
+                "give each device its own --name or they will confuse each other",
+                self.name,
+            )
+
         if self._clock() - self._started < self.warmup_s:
+            # Learning who is in the pool is not news. Take this view as the baseline
+            # and say nothing until the device has had time to settle.
             self._previous = now
             return
+        if not self._announced:
+            # What was held back is summed up once, so the feed is not empty on a
+            # pool that formed a moment ago.
+            self._announced = True
+            online = sum(1 for _, live in self.table.snapshot() if live == ALIVE)
+            self._record(
+                "joined",
+                f"{self.name} is up, with {online} device{'s' if online != 1 else ''} in the pool",
+                self.name,
+            )
 
         for name, (liveness, state, stages) in now.items():
             if name == self.name and name not in self._previous:

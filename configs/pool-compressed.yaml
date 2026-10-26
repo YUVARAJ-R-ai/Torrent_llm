@@ -1,0 +1,27 @@
+# The same pool as configs/pool.yaml, with hidden states shrunk on the wire.
+#
+#   scripts/join.sh --pool configs/pool-compressed.yaml
+#
+# EVERY device must use the same file: both ends of a hop have to agree on the codec,
+# and devices that do not will refuse each other and say why.
+#
+# Hidden states are projected onto the 256 directions that matter most (found from real
+# data, see docs/compression.md) and sent as 16-bit numbers: 8x smaller, at a cost of a
+# few points of answer quality (96% -> 88% right on a small test). Worth it on a slow
+# link; on a fast one the extra work may not pay for itself. For a stronger squeeze:
+# weights/qwen3-0.6b-l14-r128.safetensors with rank: 128 gives 16x, at a bigger cost.
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+stages: 2        # compression weights are fitted for the boundary between exactly two stages
+replicas: 2
+shard_mb: 1500
+use_spare_capacity: true
+
+codec:
+  name: lowrank
+  rank: 256
+  weights_path: weights/qwen3-0.6b-l14-r256.safetensors
+  wire_dtype: float16

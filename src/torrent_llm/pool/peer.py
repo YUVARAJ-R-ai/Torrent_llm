@@ -9,7 +9,6 @@ It learns the rest from them, and they learn of it.
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import signal
@@ -17,18 +16,18 @@ import socket
 import sys
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 import uvicorn
-import yaml
 from fastapi.middleware.cors import CORSMiddleware
 
 from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT
 from torrent_llm.pool.api import Tokenizer, create_peer_app
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
 from torrent_llm.pool.daemon import PeerDaemon
+from torrent_llm.pool.doctor import FAIL, report, run_checks
 from torrent_llm.pool.hosting import Loader
+from torrent_llm.pool.settings import PeerSettings, build_parser, settings_from_args
 from torrent_llm.shard import ShardSpec, load_shard
 
 logger = logging.getLogger(__name__)
@@ -65,6 +64,7 @@ def launch(
     join: list[str] | None = None,
     token: str | None = None,
     cors_origins: list[str] | None = None,
+    cors_regex: str | None = None,
     stop_token_ids: set[int] | None = None,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
     **daemon_kwargs,
@@ -101,10 +101,11 @@ def launch(
         system_prompt=system_prompt,
         on_leave=leave,
     )
-    if cors_origins:
+    if cors_origins or cors_regex:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=cors_origins,
+            allow_origins=cors_origins or [],
+            allow_origin_regex=cors_regex,
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -124,82 +125,74 @@ def launch(
     return peer
 
 
-def _profile_from_args(args: argparse.Namespace, raw: dict) -> DeviceProfile:
-    base: dict = {}
-    if args.profile:
-        match = [d for d in raw.get("devices", []) if d["name"] == args.profile]
-        if not match:
-            names = [d["name"] for d in raw.get("devices", [])]
-            raise SystemExit(f"no device named {args.profile!r} in the pool file; have {names}")
-        base = dict(match[0])
-    overrides = {
-        "name": args.name,
-        "label": args.label,
-        "device": args.device,
-        "memory_mb": args.memory_mb,
-        "speed": args.speed,
-        "watch_owner": args.watch_owner,
-        "owner_busy_mb": args.owner_busy_mb,
-    }
-    base.update({k: v for k, v in overrides.items() if v is not None})
-    if args.link_latency_ms is not None or args.link_bandwidth_mbps is not None:
-        base["link"] = {
-            "latency_ms": args.link_latency_ms or 0.0,
-            "bandwidth_mbps": args.link_bandwidth_mbps or 100.0,
-        }
-    if "name" not in base:
-        base["name"] = socket.gethostname()
-    return DeviceProfile.from_dict(base)
+def banner(settings: PeerSettings, peer: RunningPeer) -> str:
+    """What a person needs to see once the device is up, in the order they need it."""
+    sl = settings.slots
+    lines = [
+        "",
+        f'  Torrent-LLM pool device "{settings.profile.name}" is running.',
+        "",
+        f"  Open this in a browser to see and use the pool:   {settings.url}",
+        "",
+        f"  Hardware : {settings.resolved_device}, lending {settings.profile.memory_mb} MB "
+        f"({settings.memory_source}), room for {sl} stage{'s' if sl != 1 else ''}",
+        f"  Model    : {settings.config.model_id}, loading in the background",
+    ]
+    if settings.discover:
+        lines.append("  Others   : devices on this network will find this one by themselves")
+    lines.append(
+        f"  Or point another device here:   torrent-peer --join {settings.host}:{settings.port}"
+    )
+    if settings.token:
+        lines.append("  Token    : on (other devices need the same one)")
+    ports = f"TCP {settings.port}"
+    if settings.shard_ports:
+        ports += f", {settings.shard_ports[0]}-{settings.shard_ports[1]}"
+    lines.append(f"  Ports    : {ports}" + ("  and UDP 9099" if settings.discover else ""))
+    for note in settings.notes:
+        lines.append(f"  NOTE     : {note}")
+    if sl == 0:
+        lines.append(
+            f"  NOTE     : {settings.profile.memory_mb} MB is less than one stage "
+            f"({settings.config.shard_mb} MB), so this device will join but hold nothing. "
+            "Close other programs or pass --memory-mb."
+        )
+    lines += ["", "  Stop with Ctrl+C. The device says goodbye so the pool adjusts at once.", ""]
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run one device of a Torrent-LLM pool.")
-    parser.add_argument("--pool", required=True, help="pool YAML: model, stages, replicas")
-    parser.add_argument("--profile", help="take this device's description from the pool file")
-    parser.add_argument("--name", help="this device's name (unique in the pool)")
-    parser.add_argument("--label", help="what to call it on the dashboard")
-    parser.add_argument("--device", help="cpu, cuda, mps or auto")
-    parser.add_argument("--memory-mb", type=int, help="memory this device lends the pool")
-    parser.add_argument("--speed", type=float, help="relative speed, to rank devices")
-    parser.add_argument(
-        "--watch-owner",
-        action="store_true",
-        default=None,
-        help="back off automatically when other programs take much of the GPU",
-    )
-    parser.add_argument(
-        "--owner-busy-mb",
-        type=int,
-        help="GPU memory other programs may hold before this counts as the owner using it",
-    )
-    parser.add_argument("--link-latency-ms", type=float)
-    parser.add_argument("--link-bandwidth-mbps", type=float)
-    parser.add_argument("--host", default="127.0.0.1", help="address others reach this device on")
-    parser.add_argument("--bind", default=None, help="address to listen on (default: --host)")
-    parser.add_argument("--port", type=int, default=9000, help="HTTP control port")
-    parser.add_argument("--join", action="append", default=[], help="host:port of any pool device")
-    parser.add_argument("--token", default=os.environ.get("TORRENT_POOL_TOKEN"))
-    parser.add_argument("--cors-origin", action="append", default=[])
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args(argv)
-
+    args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+    settings = settings_from_args(args)
 
-    raw = yaml.safe_load(Path(args.pool).read_text())
-    config = PoolConfig.from_dict(raw)
-    profile = _profile_from_args(args, raw)
-    token = args.token or raw.get("token")
+    if args.check:
+        checks = run_checks(settings)
+        print(report(checks))
+        return 1 if any(c.status == FAIL for c in checks) else 0
 
-    from transformers import AutoTokenizer
+    config, profile = settings.config, settings.profile
 
-    from torrent_llm.chat import stop_token_ids
+    try:
+        from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_id, trust_remote_code=config.trust_remote_code
-    )
+        from torrent_llm.chat import stop_token_ids
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model_id, trust_remote_code=config.trust_remote_code
+        )
+    except OSError as exc:
+        print(
+            f"\nCould not load {config.model_id}: {exc}\n\n"
+            "The model is probably not downloaded on this machine. Connect to the internet "
+            "and run scripts/setup.sh (or scripts\\setup.ps1 on Windows), then try again.\n"
+            "To check everything at once: torrent-peer --check\n",
+            file=sys.stderr,
+        )
+        return 1
 
     def loader(spec: ShardSpec):
         return load_shard(
@@ -210,26 +203,42 @@ def main(argv: list[str] | None = None) -> int:
             trust_remote_code=config.trust_remote_code,
         )
 
-    peer = launch(
-        config,
-        profile,
-        loader,
-        tokenizer,
-        host=args.host,
-        port=args.port,
-        bind=args.bind,
-        join=args.join,
-        token=token,
-        cors_origins=args.cors_origin,
-        stop_token_ids=stop_token_ids(config.model_id, tokenizer),
-    )
-    link = profile.link.describe() if profile.link else "none"
-    print(f"{profile.name} is up at {peer.url}  (device {profile.device}, link {link})", flush=True)
+    try:
+        peer = launch(
+            config,
+            profile,
+            loader,
+            tokenizer,
+            host=settings.host,
+            port=settings.port,
+            bind=settings.bind,
+            join=settings.join,
+            token=settings.token,
+            cors_origins=settings.cors_origins,
+            cors_regex=settings.cors_regex,
+            stop_token_ids=stop_token_ids(config.model_id, tokenizer),
+            discover=settings.discover,
+            shard_port_base=settings.shard_port_base,
+        )
+    except OSError as exc:
+        print(
+            f"\nCould not start on port {settings.port}: {exc}\n\n"
+            "Another program (or another torrent-peer) is probably using it. Stop that one, "
+            "or choose another port with --port.\nTo check everything: torrent-peer --check\n",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(banner(settings, peer), flush=True)
 
     done = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: done.set())
     signal.signal(signal.SIGTERM, lambda *_: done.set())
-    done.wait()
+    # Wait in short slices: on Windows a wait with no timeout cannot be interrupted by
+    # Ctrl+C, which would leave the device impossible to stop from its own terminal.
+    while not done.wait(0.5):
+        pass
+    print("Leaving the pool...", flush=True)
     peer.close(graceful=True)
     return 0
 

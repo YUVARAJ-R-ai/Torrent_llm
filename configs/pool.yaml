@@ -1,0 +1,21 @@
+# The pool every real device joins. Everyone must use the same copy of this file
+# (it comes with the repository), because these settings decide how the model is
+# cut up, and two devices cutting it differently would not fit together.
+#
+#   scripts/join.sh        # Linux and macOS
+#   scripts\join.ps1       # Windows
+#
+# Nothing here is per-device: each device works out its own name, address, hardware
+# and how much memory to lend. See docs/real-devices.md.
+
+model_id: Qwen/Qwen3-0.6B
+num_layers: 28
+dtype: float32
+
+stages: 2        # the model is cut into this many pieces...
+replicas: 2      # ...and each piece should live on this many devices
+shard_mb: 1500   # rough memory one piece costs, to count how many a device has room for
+
+# A device that has room for more than it needs takes extra copies of a stage when it
+# is faster than the devices already holding it, so spare capacity is used.
+use_spare_capacity: true

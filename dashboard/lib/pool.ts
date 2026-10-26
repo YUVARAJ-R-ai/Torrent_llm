@@ -15,12 +15,30 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const SEEDS = (
+/**
+ * Set when this page is served by a device itself (the build every device ships
+ * with). The device it came from is then the one to ask, wherever that is, with no
+ * addresses to configure and no lab, since a lab only exists on one machine
+ * simulating several.
+ */
+export const SAME_ORIGIN = process.env.NEXT_PUBLIC_POOL_SAME_ORIGIN === "1";
+
+const DEV_SEEDS = (
   process.env.NEXT_PUBLIC_POOL_SEEDS ??
   "http://127.0.0.1:9101,http://127.0.0.1:9102,http://127.0.0.1:9103"
 ).split(",");
-export const LAB_BASE =
-  process.env.NEXT_PUBLIC_LAB_BASE ?? "http://127.0.0.1:8100";
+
+/** Where to start looking for the pool. */
+function seeds(): string[] {
+  if (SAME_ORIGIN && typeof window !== "undefined") {
+    return [window.location.origin];
+  }
+  return DEV_SEEDS;
+}
+
+export const LAB_BASE = SAME_ORIGIN
+  ? ""
+  : (process.env.NEXT_PUBLIC_LAB_BASE ?? "http://127.0.0.1:8100");
 
 export type Liveness = "alive" | "suspect" | "down";
 export type DeviceState = "active" | "draining" | "away" | "left";
@@ -31,6 +49,8 @@ export interface HostedStage {
   status: "loading" | "ready" | "failed";
   inflight: number;
   served: number;
+  /** Milliseconds spent computing for requests since the stage came up. */
+  busy_ms: number;
 }
 
 export interface PoolMember {
@@ -47,6 +67,9 @@ export interface PoolMember {
   link: { latency_ms: number; bandwidth_mbps: number } | null;
   state: DeviceState;
   hosting: HostedStage[];
+  /** Questions asked through this device, and the tokens they produced. */
+  asked: number;
+  asked_tokens: number;
   liveness: Liveness;
   is_self: boolean;
   rtt_ms: number | null;
@@ -65,6 +88,8 @@ export interface PoolView {
     num_layers: number;
     replicas: number;
     shard_mb: number;
+    /** "raw" for no compression, otherwise what the codec is (e.g. lowrank-r256). */
+    codec: string;
     stages: PoolStageInfo[];
   };
   members: PoolMember[];
@@ -85,6 +110,8 @@ export interface HopInfo {
   member: string;
   address: string;
   sent_bytes: number;
+  /** What `sent_bytes` would have been with no compression. */
+  uncompressed_bytes: number;
   received_bytes: number;
   compute_ms: number;
   transport_ms: number;
@@ -123,6 +150,7 @@ export interface PoolGenerateResult {
     tokens: number;
     failovers: number;
     sent_bytes: number;
+    uncompressed_bytes: number;
     compute_ms: number;
     transport_ms: number;
   };
@@ -214,10 +242,11 @@ export function usePool(intervalMs = 1000) {
     error: null,
   });
   const base = useRef<string | null>(null);
-  const known = useRef<string[]>(SEEDS);
+  const known = useRef<string[]>([]);
   const lastEvent = useRef(0);
 
   const poll = useCallback(async () => {
+    if (known.current.length === 0) known.current = seeds();
     // Start from the device that worked last time, then everyone else.
     const order = [base.current, ...known.current].filter(
       (u, i, all): u is string => !!u && all.indexOf(u) === i,
@@ -234,7 +263,7 @@ export function usePool(intervalMs = 1000) {
     }
 
     if (!view) {
-      for (const url of SEEDS.filter((u) => !order.includes(u))) {
+      for (const url of seeds().filter((u) => !order.includes(u))) {
         try {
           view = await getJson<PoolView>(`${url}/pool`);
           base.current = url;
@@ -269,6 +298,7 @@ export function usePool(intervalMs = 1000) {
 
     let lab: LabDevice[] | null = null;
     try {
+      if (!LAB_BASE) throw new Error("no lab here");
       lab = (
         await getJson<{ devices: LabDevice[] }>(
           `${LAB_BASE}/lab`,
@@ -356,6 +386,7 @@ export function usePool(intervalMs = 1000) {
       getJson(`${memberUrl(member)}/admin/owner`, {
         method: "POST",
         body: JSON.stringify({ busy }),
+        headers: poolTokenHeader(),
       }),
     [],
   );
@@ -386,4 +417,17 @@ function mergeEvents(
   const seen = new Set(have.map((e) => `${e.t}|${e.text}`));
   const fresh = incoming.filter((e) => !seen.has(`${e.t}|${e.text}`));
   return [...have, ...fresh].slice(-60);
+}
+
+/**
+ * The pool's shared token, for actions that change the pool, if the page was opened
+ * with one in its address (`?token=...`).
+ *
+ * Asking questions and looking never need it. It is read from the address rather
+ * than stored, so it is only as visible as the link the person chose to share.
+ */
+function poolTokenHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = new URLSearchParams(window.location.search).get("token");
+  return token ? { "x-pool-token": token } : {};
 }

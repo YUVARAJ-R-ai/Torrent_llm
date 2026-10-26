@@ -23,10 +23,12 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from pathlib import Path
 from typing import Any, Protocol
 
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT, NoChatTemplate, render_chat
@@ -37,6 +39,9 @@ from torrent_llm.pool.placement import coverage
 from torrent_llm.pool.router import NoReplica
 from torrent_llm.pool.runner import PoolUnavailable
 from torrent_llm.sampling import Sampling
+
+#: The dashboard build shipped with the package (see scripts/build_ui.sh).
+DEFAULT_UI_DIR = Path(__file__).resolve().parent / "ui"
 
 
 class Tokenizer(Protocol):
@@ -65,12 +70,14 @@ class OwnerIn(BaseModel):
 class GossipIn(BaseModel):
     sender: str
     members: list[dict[str, Any]]
+    pool_id: str | None = None
 
 
 def create_peer_app(
     daemon: PeerDaemon,
     tokenizer: Tokenizer,
     *,
+    ui_dir: Path | None = DEFAULT_UI_DIR,
     stop_token_ids: set[int] | None = None,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
     on_leave=None,
@@ -125,6 +132,7 @@ def create_peer_app(
                 "num_layers": config.num_layers,
                 "replicas": config.replicas,
                 "shard_mb": config.shard_mb,
+                "codec": config.codec_signature,
                 "stages": [
                     {"stage": s.index, "start": s.start, "end": s.end} for s in config.specs()
                 ],
@@ -143,6 +151,13 @@ def create_peer_app(
 
     @app.post("/gossip", dependencies=[Depends(require_token)])
     def gossip(body: GossipIn) -> dict[str, Any]:
+        # Devices running different settings (model, stages, codec) cannot work
+        # together, and would fail in confusing ways if they tried. Say so now.
+        if body.pool_id is not None and body.pool_id != daemon.pool_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this pool is {daemon.pool_id!r}, not {body.pool_id!r}",
+            )
         mine = daemon.receive(body.sender, [Member.from_dict(m) for m in body.members])
         return {"members": mine}
 
@@ -172,6 +187,7 @@ def create_peer_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         generated = result.ids[0, input_ids.shape[1] :].tolist()
+        daemon.record_asked(len(generated))
         tokens = _per_token_text(tokenizer, generated)
         passes = [dataclasses.asdict(p) for p in result.passes]
         hops = [h for p in result.passes for h in p.hops]
@@ -186,6 +202,7 @@ def create_peer_app(
                 "tokens": len(tokens),
                 "failovers": result.failovers,
                 "sent_bytes": sum(h.sent_bytes for h in hops),
+                "uncompressed_bytes": sum(h.uncompressed_bytes for h in hops),
                 "compute_ms": round(sum(h.compute_ms for h in hops), 2),
                 "transport_ms": round(sum(h.transport_ms for h in hops), 2),
             },
@@ -203,6 +220,12 @@ def create_peer_app(
         if on_leave is not None:
             threading.Timer(0.2, on_leave).start()
         return {"state": "leaving"}
+
+    # The dashboard, served by the device itself so that opening any device in a
+    # browser shows the pool, with nothing else installed. Mounted last so that
+    # every API route above wins where a path could be either.
+    if ui_dir is not None and (ui_dir / "index.html").exists():
+        app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
 
     return app
 

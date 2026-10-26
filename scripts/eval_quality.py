@@ -350,9 +350,7 @@ def run_evaluation(args: argparse.Namespace) -> int:
             # 2. Downstream benchmarks
             if args.benchmark in ("gsm8k-sample", "mmlu-sample", "all"):
                 downstream_bench = (
-                    args.benchmark
-                    if args.benchmark in ("gsm8k-sample", "mmlu-sample")
-                    else "all"
+                    args.benchmark if args.benchmark in ("gsm8k-sample", "mmlu-sample") else "all"
                 )
                 down_res = evaluate_downstream(
                     runner,

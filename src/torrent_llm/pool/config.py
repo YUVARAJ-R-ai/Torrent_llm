@@ -50,6 +50,11 @@ class PoolConfig:
     #: Let a device with spare room take extra copies of a stage when it is faster
     #: than the slowest device already holding it, so idle capacity is used.
     use_spare_capacity: bool = True
+    #: How hidden states are shrunk on the wire. Part of the shared settings because
+    #: both ends of a hop must use the same one, and two devices with different
+    #: codecs would hand each other bytes they cannot read.
+    codec: str = "raw"
+    codec_args: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.stages < 1 or self.stages > self.num_layers:
@@ -78,7 +83,29 @@ class PoolConfig:
             "trust_remote_code",
             "use_spare_capacity",
         }
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        fields = {k: v for k, v in raw.items() if k in known}
+        codec = raw.get("codec", "raw")
+        if isinstance(codec, dict):
+            fields["codec_args"] = {k: v for k, v in codec.items() if k != "name"}
+            codec = codec["name"]
+        fields["codec"] = codec
+        return cls(**fields)
+
+    @property
+    def codec_signature(self) -> str:
+        """A short description of the codec, so devices with different ones never mix."""
+        name = self.codec
+        weights = self.codec_args.get("weights_path")
+        rank = self.codec_args.get("rank")
+        wire = self.codec_args.get("wire_dtype")
+        parts = [name]
+        if rank:
+            parts.append(f"r{rank}")
+        if weights:
+            parts.append(Path(str(weights)).stem)
+        if wire:
+            parts.append(str(wire))
+        return "-".join(parts)
 
 
 @dataclass(frozen=True)
@@ -105,6 +132,15 @@ class DeviceProfile:
     #: Back off automatically when other programs take this much GPU memory.
     watch_owner: bool = False
     owner_busy_mb: int = 1500
+    #: Questions this device will start at once before refusing more. ``None`` picks
+    #: a default for the hardware (more for a GPU than a CPU).
+    max_requests: int | None = None
+
+    def request_limit(self, resolved_device: str) -> int:
+        """How many questions to start at once. A GPU copes with far more than a CPU."""
+        if self.max_requests is not None:
+            return self.max_requests
+        return 8 if resolved_device.startswith(("cuda", "mps")) else 3
 
     def slots(self, shard_mb: int) -> int:
         """How many stages this device has memory for."""
@@ -123,6 +159,7 @@ class DeviceProfile:
             "speed",
             "watch_owner",
             "owner_busy_mb",
+            "max_requests",
         }
         unknown = fields.keys() - known
         if unknown:

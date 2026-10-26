@@ -24,6 +24,9 @@ wandb/
 models/
 *.safetensors
 *.bin
+# ...except the small calibrated codec weights (about 1-2 MB each) that make
+# compression work out of the box. See docs/compression.md.
+!weights/*.safetensors
 
 # Dashboard (issue #27) -- a Node project nested in a Python repo, so its
 # artifacts need their own entries rather than inheriting anything above.

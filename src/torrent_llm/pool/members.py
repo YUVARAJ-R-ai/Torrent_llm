@@ -53,6 +53,9 @@ class HostedStage:
     inflight: int = 0
     #: Requests it has finished since it came up.
     served: int = 0
+    #: Milliseconds this stage has spent computing for requests since it came up.
+    #: Summed over a device's stages, it is what the device has given the pool.
+    busy_ms: int = 0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> HostedStage:
@@ -79,6 +82,10 @@ class Member:
     hosting: tuple[HostedStage, ...] = ()
     #: Together these order a device's changes: a restart begins a new
     #: incarnation, so its counter starting over is not mistaken for old news.
+    #: Questions asked through this device, and the tokens they produced. What the
+    #: device has *used*, to set beside what it has given.
+    asked: int = 0
+    asked_tokens: int = 0
     incarnation: int = 0
     heartbeat: int = 0
 
@@ -141,6 +148,8 @@ class MemberTable:
         self._clock = clock
         self._seen: dict[str, _Seen] = {}
         self._lock = threading.RLock()
+        #: Addresses of other devices that are also calling themselves ``me``.
+        self.name_clashes: set[str] = set()
 
     # --- writing -----------------------------------------------------------
 
@@ -162,7 +171,15 @@ class MemberTable:
         with self._lock:
             for member in incoming:
                 if member.name == self.me:
-                    # Nobody else's account of me beats my own.
+                    # Nobody else's account of me beats my own. But if the
+                    # account comes from a different place, two devices share a
+                    # name, which would make them overwrite each other: say so.
+                    mine = self._seen.get(self.me)
+                    if mine is not None and (member.host, member.control_port) != (
+                        mine.member.host,
+                        mine.member.control_port,
+                    ):
+                        self.name_clashes.add(f"{member.host}:{member.control_port}")
                     continue
                 known = self._seen.get(member.name)
                 if known is None or member.stamp > known.member.stamp:

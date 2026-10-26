@@ -26,6 +26,7 @@ from torrent_llm.transport.convert import (
     header_to_proto,
     message_from_proto,
 )
+from torrent_llm.wire import ActivationMessage
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,11 @@ class HopResult:
     encode_ns: int = 0
     #: Time spent decoding the inbound reply.
     decode_ns: int = 0
+    #: The reply exactly as it came off the wire, before decoding. Handing it to the next
+    #: hop (``forward(message=...)``) sends the payload on untouched, which matters for
+    #: any codec that is not an exact round trip: decoding and encoding it again would
+    #: apply the compression twice.
+    reply_message: ActivationMessage | None = None
 
     @property
     def codec_overhead_ns(self) -> int:
@@ -125,6 +131,7 @@ class ShardClient:
         end_of_request: bool = False,
         expected_cache_position: int | None = None,
         sampling: Sampling | None = None,
+        message: ActivationMessage | None = None,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -162,9 +169,19 @@ class ShardClient:
                 shard.
         """
         request_id = request_id or uuid.uuid4().hex
-        t_encode_start = time.perf_counter_ns()
-        message = self.codec.encode(tensor, request_id=request_id, hop=hop)
-        encode_ns = time.perf_counter_ns() - t_encode_start
+        if _can_forward_untouched(message, self.codec, request_id, hop, is_token_ids):
+            # The previous hop's reply is already in this codec's format, addressed to
+            # this hop. Send its bytes on as they are: no decode, no encode, and no
+            # second round of compression loss.
+            encoded = message
+            encode_ns = 0
+            uncompressed_bytes = encoded.header.logical_numel * _element_size(encoded.header.dtype)
+        else:
+            t_encode_start = time.perf_counter_ns()
+            encoded = self.codec.encode(tensor, request_id=request_id, hop=hop)
+            encode_ns = time.perf_counter_ns() - t_encode_start
+            uncompressed_bytes = tensor.numel() * tensor.element_size()
+        message = encoded
 
         request = pb.ForwardRequest(
             header=header_to_proto(message.header),
@@ -210,13 +227,14 @@ class ShardClient:
             sent_bytes=message.payload_bytes,
             received_bytes=len(reply.payload),
             sent_numel=message.header.logical_numel,
-            sent_uncompressed_bytes=tensor.numel() * tensor.element_size(),
+            sent_uncompressed_bytes=uncompressed_bytes,
             wall_ns=wall_ns,
             compute_ns=reply.compute_ns,
             codec=message.header.codec,
             cache_length=reply.cache_length,
             encode_ns=encode_ns,
             decode_ns=decode_ns,
+            reply_message=reply_msg,
         )
 
     def close(self) -> None:
@@ -227,3 +245,30 @@ class ShardClient:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+def _element_size(dtype_name: str) -> int:
+    return torch.empty((), dtype=getattr(torch, dtype_name)).element_size()
+
+
+def _can_forward_untouched(
+    message: ActivationMessage | None,
+    codec: Codec,
+    request_id: str,
+    hop: int,
+    is_token_ids: bool,
+) -> bool:
+    """Whether the previous hop's reply can be sent on exactly as received.
+
+    Only when it is in the format this client would have produced anyway (same codec)
+    and is already addressed to this request and hop, which a reply from the previous
+    shard is. Anything else is re-encoded, so a mismatch costs a little time, never
+    correctness.
+    """
+    return (
+        message is not None
+        and not is_token_ids
+        and message.header.codec == codec.name
+        and message.header.request_id == request_id
+        and message.header.hop == hop
+    )

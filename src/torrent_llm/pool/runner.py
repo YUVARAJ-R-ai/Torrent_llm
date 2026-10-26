@@ -58,6 +58,8 @@ class HopInfo:
     member: str
     address: str
     sent_bytes: int
+    #: What ``sent_bytes`` would have been with no compression.
+    uncompressed_bytes: int
     received_bytes: int
     compute_ms: float
     transport_ms: float
@@ -83,7 +85,7 @@ class PassInfo:
 class PoolEvent:
     """Something that happened to the request on its way."""
 
-    kind: str  # "failover" | "waiting" | "recovered"
+    kind: str  # "failover" | "waiting" | "recovered" | "busy"
     at_pass: int  # how many passes had completed when it happened
     step: int
     stage: int | None = None
@@ -127,9 +129,11 @@ class PoolRunner:
         me: str | None = None,
         patience: float = 10.0,
         max_failovers: int = 6,
+        max_busy_retries: int = 30,
         poll_s: float = 0.25,
         token: str | None = None,
     ) -> None:
+        self.max_busy_retries = max_busy_retries
         self._token = token
         self.config = config
         self.table = table
@@ -166,13 +170,27 @@ class PoolRunner:
                 return self.route(avoid=avoid)
             except NoReplica as exc:
                 if time.monotonic() >= deadline:
-                    raise PoolUnavailable(
-                        f"{exc}, and none came back within {self.patience:.0f}s", stage=exc.stage
-                    ) from exc
+                    raise PoolUnavailable(self._why_unavailable(exc), stage=exc.stage) from exc
                 if not waited:
                     on_wait(exc.stage)
                     waited = True
                 time.sleep(self._poll_s)
+
+    def _why_unavailable(self, exc: NoReplica) -> str:
+        """A message that blames the right thing.
+
+        A device that has found no one else cannot route anything, and "stage 1 has no
+        copy" would send the person looking at the wrong problem: the fault is that this
+        device is not connected to the pool at all.
+        """
+        others = [m for m in self.table.members() if m.name != self.table.me]
+        if not others:
+            return (
+                "this device has not found any other device in the pool. Check that the "
+                "--join address is right and reachable (or that broadcast discovery works on "
+                "this network), and run: torrent-peer --check"
+            )
+        return f"{exc}, and none came back within {self.patience:.0f}s"
 
     def _topology(self, route: list[Replica]) -> TopologyConfig:
         def link_of(r: Replica) -> LinkProfile | None:
@@ -182,6 +200,8 @@ class PoolRunner:
             model_id=self.config.model_id,
             num_layers=self.config.num_layers,
             dtype=self.config.dtype,
+            codec=self.config.codec,
+            codec_args=self.config.codec_args,
             nodes=[NodeConfig(address=r.address, link=link_of(r)) for r in route],
         )
 
@@ -241,6 +261,7 @@ class PoolRunner:
         sent = ids
         cache_position = 0
         recovery = False
+        busy_rejections = 0
         step = 0
         try:
             while step < max_new_tokens:
@@ -259,6 +280,36 @@ class PoolRunner:
                     )
                 except HopError as exc:
                     failed = route[exc.hop]
+                    if exc.is_busy:
+                        # Not a failure: the device is full and said so before doing any
+                        # work. Ask another copy, and back off if they are all full.
+                        busy_rejections += 1
+                        note(
+                            "busy",
+                            step,
+                            stage=failed.stage,
+                            member=failed.member,
+                            detail="at its limit",
+                        )
+                        if busy_rejections > self.max_busy_retries:
+                            raise PoolUnavailable(
+                                f"every device holding stage {failed.stage + 1} is busy right "
+                                "now. Try again in a moment.",
+                                stage=failed.stage,
+                            ) from exc
+                        avoid.add(failed.member)
+                        self._charge(route, -1)
+                        runner.close()
+                        time.sleep(min(0.5, 0.05 * busy_rejections))
+                        route = self._await_route(
+                            avoid, on_wait=lambda s, at=step: note("waiting", at, stage=s)
+                        )
+                        self._charge(route, +1)
+                        runner = ChainRunner(self._topology(route), token=self._token)
+                        request_id = uuid.uuid4().hex
+                        sent = ids
+                        cache_position = 0
+                        continue
                     logger.warning("%s: switching route (%s)", failed.member, exc)
                     note(
                         "failover",
@@ -296,6 +347,7 @@ class PoolRunner:
                         member=route[i].member,
                         address=route[i].address,
                         sent_bytes=h.sent_bytes,
+                        uncompressed_bytes=h.sent_uncompressed_bytes,
                         received_bytes=h.received_bytes,
                         compute_ms=h.compute_ns / 1e6,
                         transport_ms=h.transport_ns / 1e6,

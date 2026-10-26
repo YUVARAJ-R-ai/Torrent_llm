@@ -79,7 +79,10 @@ function Dot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
 }
 
 /** The hardware a device runs on, with an icon, so "fast" and "slow" are visible at a glance. */
-function HardwareChip({ device }: { device: string }) {
+/** "Darwin" is what the system calls macOS; people know it by the other name. */
+const osName = (os: string) => (os === "Darwin" ? "macOS" : os);
+
+function HardwareChip({ device, os }: { device: string; os?: string }) {
   const gpu = device.startsWith("cuda") || device === "mps";
   return (
     <span
@@ -92,6 +95,7 @@ function HardwareChip({ device }: { device: string }) {
     >
       {gpu ? <Gpu size={11} aria-hidden /> : <Cpu size={11} aria-hidden />}
       {device.toUpperCase()}
+      {os ? ` · ${osName(os)}` : ""}
     </span>
   );
 }
@@ -204,10 +208,12 @@ export const CopyCard = forwardRef<
     lab?: LabDevice | null;
     busy?: boolean;
     lost?: boolean;
+    /** Show the operating system, when the pool mixes more than one. */
+    showOs?: boolean;
     actions: Actions;
   }
 >(function CopyCard(
-  { member, stage, layers, hosted, layoutId, lab, busy, lost, actions },
+  { member, stage, layers, hosted, layoutId, lab, busy, lost, showOs, actions },
   ref,
 ) {
   const status = lost
@@ -258,7 +264,10 @@ export const CopyCard = forwardRef<
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <HardwareChip device={member.device} />
+          <HardwareChip
+            device={member.device}
+            os={showOs ? member.os : undefined}
+          />
           <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
             <ActionButtons member={member} lab={lab} actions={actions} />
           </div>
@@ -298,9 +307,10 @@ export const BenchTile = forwardRef<
     member: PoolMember | null;
     lab?: LabDevice | null;
     layoutId: string;
+    showOs?: boolean;
     actions: Actions;
   }
->(function BenchTile({ member, lab, layoutId, actions }, ref) {
+>(function BenchTile({ member, lab, layoutId, showOs, actions }, ref) {
   const name = member?.label || lab?.label || "Device";
   const status = member
     ? describeDevice(member, lab)
@@ -336,7 +346,10 @@ export const BenchTile = forwardRef<
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <HardwareChip device={member?.device ?? lab?.device ?? "cpu"} />
+          <HardwareChip
+            device={member?.device ?? lab?.device ?? "cpu"}
+            os={showOs ? member?.os : undefined}
+          />
           <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
             <ActionButtons member={member} lab={lab} actions={actions} />
           </div>

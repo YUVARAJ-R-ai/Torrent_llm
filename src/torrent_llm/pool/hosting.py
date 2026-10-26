@@ -44,10 +44,16 @@ class LoadCounter(grpc.ServerInterceptor):
     that accurately: it sees every requester, where a requester sees only its own.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int | None = None) -> None:
+        #: Most forward passes allowed at once before new questions are refused.
+        #: ``None`` means no limit.
+        self.limit = limit
         self._lock = threading.Lock()
+        self.rejected = 0
         self.active = 0
         self.served = 0
+        #: Nanoseconds spent inside forward passes, all callers together.
+        self.busy_ns = 0
 
     def intercept_service(self, continuation, handler_call_details):
         handler = continuation(handler_call_details)
@@ -58,20 +64,47 @@ class LoadCounter(grpc.ServerInterceptor):
         inner = handler.unary_unary
 
         def counted(request, context):
+            if self.limit is not None and _starts_a_question(request):
+                with self._lock:
+                    full = self.active >= self.limit
+                    if full:
+                        self.rejected += 1
+                if full:
+                    # Refused before any work, so nothing needs undoing: the requester
+                    # simply asks another copy.
+                    context.abort(
+                        grpc.StatusCode.RESOURCE_EXHAUSTED,
+                        "this device is at its limit right now",
+                    )
             with self._lock:
                 self.active += 1
+            started = time.perf_counter_ns()
             try:
                 return inner(request, context)
             finally:
+                elapsed = time.perf_counter_ns() - started
                 with self._lock:
                     self.active -= 1
                     self.served += 1
+                    self.busy_ns += elapsed
 
         return grpc.unary_unary_rpc_method_handler(
             counted,
             request_deserializer=handler.request_deserializer,
             response_serializer=handler.response_serializer,
         )
+
+
+def _starts_a_question(request) -> bool:
+    """Whether this call begins a new question, as opposed to continuing one.
+
+    Only the start may be refused. A question already under way has spent effort on
+    every stage it passed through, and cutting it off to save a little here would
+    throw all of that away and make the overload worse.
+    """
+    if not request.use_cache:
+        return True
+    return request.HasField("expected_cache_position") and request.expected_cache_position == 0
 
 
 @dataclass
@@ -110,8 +143,15 @@ class ShardHost:
         bind: str = "127.0.0.1",
         codec: Codec | None = None,
         token: str | None = None,
+        port_base: int = 0,
+        max_requests: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._max_requests = max_requests
+        #: First port for shard servers: stage ``s`` listens on ``port_base + s``. Zero
+        #: lets the system choose, which suits several devices on one machine; fixed
+        #: ports let a real device open exactly the range its firewall needs.
+        self._port_base = port_base
         self._token = token
         self._specs = specs
         self._loader = loader
@@ -134,6 +174,7 @@ class ShardHost:
                     status=h.status,
                     inflight=h.counter.active,
                     served=h.counter.served,
+                    busy_ms=h.counter.busy_ns // 1_000_000,
                 )
                 for h in sorted(self._held.values(), key=lambda h: h.stage)
             )
@@ -173,7 +214,11 @@ class ShardHost:
             known = self._held.get(stage)
             if known is not None and known.status != FAILED:
                 return
-            held = _Held(stage=stage, spec=self._specs[stage])
+            held = _Held(
+                stage=stage,
+                spec=self._specs[stage],
+                counter=LoadCounter(self._max_requests),
+            )
             self._held[stage] = held
         threading.Thread(
             target=self._load, args=(held,), name=f"load-stage-{stage}", daemon=True
@@ -221,7 +266,7 @@ class ShardHost:
                 runtime,
                 self._codec,
                 host=self._bind,
-                port=0,
+                port=self._port_base + held.stage if self._port_base else 0,
                 model_id=self._model_id,
                 interceptors=[
                     *([TokenInterceptor(self._token)] if self._token else []),

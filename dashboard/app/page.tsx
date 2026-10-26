@@ -20,6 +20,8 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import AnimatedBeam from "@/components/AnimatedBeam";
 import Nav from "@/components/Nav";
+import AddDevice from "@/components/pool/AddDevice";
+import Contributions from "@/components/pool/Contributions";
 import Explainer from "@/components/pool/Explainer";
 import Feed from "@/components/pool/Feed";
 import Journey from "@/components/pool/Journey";
@@ -34,6 +36,7 @@ import { formatBytes, formatMs } from "@/lib/format";
 import {
   memberUrl,
   PoolError,
+  SAME_ORIGIN,
   usePool,
   type LabDevice,
   type PoolGenerateResult,
@@ -55,6 +58,8 @@ interface BeamState {
 
 interface Totals {
   betweenDevicesBytes: number;
+  /** The same traffic with no compression. */
+  rawBetweenDevicesBytes: number;
   networkMs: number;
   computeMs: number;
   tokens: number;
@@ -63,6 +68,7 @@ interface Totals {
 
 const ZERO: Totals = {
   betweenDevicesBytes: 0,
+  rawBetweenDevicesBytes: 0,
   networkMs: 0,
   computeMs: 0,
   tokens: 0,
@@ -190,6 +196,9 @@ export default function PoolPage() {
           networkMs: t.networkMs + step.networkMs,
           betweenDevicesBytes:
             t.betweenDevicesBytes + (step.betweenDevices ? step.bytes : 0),
+          rawBetweenDevicesBytes:
+            t.rawBetweenDevicesBytes +
+            (step.betweenDevices ? step.rawBytes : 0),
         }));
       } else if (step.kind === "compute") {
         setBusyKey(placeKey(step.at));
@@ -358,6 +367,13 @@ export default function PoolPage() {
   }, [shown]);
 
   const nowSec = view?.now ?? 0;
+  // Only worth saying when it is a difference: a pool of all-Linux devices does not
+  // need every card to say "Linux".
+  const mixedOs = useMemo(
+    () =>
+      new Set((shown?.members ?? []).map((m) => m.os).filter(Boolean)).size > 1,
+    [shown],
+  );
   const crashAvailable = !!lab && lab.some((d) => d.running);
 
   // "The owner needs the device": bring back one that is away, or send the
@@ -453,6 +469,8 @@ export default function PoolPage() {
               style={{ color: "var(--text-muted)" }}
             >
               {shown.pool.model_id} ·{" "}
+              {shown.pool.codec !== "raw" &&
+                `compressed (${shown.pool.codec}) · `}
               {shown.members.filter((m) => m.liveness === "alive").length}{" "}
               devices online · talking to {shown.self}
             </span>
@@ -591,6 +609,7 @@ export default function PoolPage() {
                           lab={labByName.get(member.name)}
                           busy={busyKey === key}
                           lost={lost.has(member.name)}
+                          showOs={mixedOs}
                           actions={actionsFor(
                             member,
                             labByName.get(member.name),
@@ -662,6 +681,7 @@ export default function PoolPage() {
                     key={`dev-${member.name}`}
                     layoutId={`dev-${member.name}`}
                     member={member}
+                    showOs={mixedOs}
                     lab={labByName.get(member.name)}
                     actions={actionsFor(member, labByName.get(member.name))}
                   />
@@ -682,6 +702,11 @@ export default function PoolPage() {
                 </p>
               )}
             </div>
+            {SAME_ORIGIN && (
+              <div className="mt-3">
+                <AddDevice />
+              </div>
+            )}
           </div>
         </section>
       </LayoutGroup>
@@ -824,6 +849,13 @@ export default function PoolPage() {
                 <Stat
                   label="Sent between devices"
                   value={formatBytes(totals.betweenDevicesBytes)}
+                  note={
+                    totals.betweenDevicesBytes > 0 &&
+                    totals.rawBetweenDevicesBytes / totals.betweenDevicesBytes >
+                      1.05
+                      ? `${(totals.rawBetweenDevicesBytes / totals.betweenDevicesBytes).toFixed(1)}× smaller than uncompressed`
+                      : undefined
+                  }
                 />
                 <Stat
                   label="Time on the network"
@@ -856,18 +888,21 @@ export default function PoolPage() {
           )}
         </div>
 
-        <section
-          className="rounded-2xl px-4 py-3.5"
-          style={{
-            background: "var(--surface-1)",
-            border: "1px solid var(--border)",
-          }}
-        >
-          <h2 className="mb-2.5 text-xs font-medium">
-            What the pool has been doing
-          </h2>
-          <Feed events={events} now={nowSec} />
-        </section>
+        <div className="flex flex-col gap-4">
+          <section
+            className="rounded-2xl px-4 py-3.5"
+            style={{
+              background: "var(--surface-1)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <h2 className="mb-2.5 text-xs font-medium">
+              What the pool has been doing
+            </h2>
+            <Feed events={events} now={nowSec} />
+          </section>
+          {shown && <Contributions members={shown.members} />}
+        </div>
       </div>
     </main>
   );
@@ -910,10 +945,12 @@ function Stat({
   label,
   value,
   alert,
+  note,
 }: {
   label: string;
   value: string;
   alert?: boolean;
+  note?: string;
 }) {
   return (
     <div
@@ -932,6 +969,14 @@ function Stat({
       >
         {value}
       </div>
+      {note && (
+        <div
+          className="mt-0.5 text-[11px]"
+          style={{ color: "var(--status-good)" }}
+        >
+          {note}
+        </div>
+      )}
     </div>
   );
 }

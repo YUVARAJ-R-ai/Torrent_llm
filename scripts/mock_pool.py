@@ -83,11 +83,16 @@ class Device:
         self.hosting: dict[int, tuple[str, float]] = {}  # stage -> (status, ready_at)
         self.inflight = 0
         self.served = 0
+        self.asked = 0
+        self.asked_tokens = 0
+        self.busy_ms = 0.0
         self.stage_ports = {}
 
 
 class MockPool:
-    def __init__(self, config: LabConfig, start: int) -> None:
+    def __init__(self, config: LabConfig, start: int, compress: float = 1.0) -> None:
+        #: How many times smaller the mock pretends the wire got, to show compression.
+        self.compress = compress
         self.config = config
         self.pool = config.pool
         self.devices = {d.name: Device(d, i) for i, d in enumerate(config.devices)}
@@ -168,6 +173,7 @@ class MockPool:
                 status=status,
                 inflight=device.inflight if status == READY else 0,
                 served=device.served,
+                busy_ms=int(device.busy_ms / max(1, len(device.hosting))),
             )
             for s, (status, _) in sorted(device.hosting.items())
         )
@@ -184,6 +190,8 @@ class MockPool:
             link=p.link.describe() if p.link else None,
             state=device.state,
             hosting=hosting,
+            asked=device.asked,
+            asked_tokens=device.asked_tokens,
         )
 
     def known(self) -> list[Device]:
@@ -270,6 +278,7 @@ class MockPool:
                 "num_layers": self.pool.num_layers,
                 "replicas": self.pool.replicas,
                 "shard_mb": self.pool.shard_mb,
+                "codec": "raw" if self.compress == 1 else "lowrank-r256-float16",
                 "stages": [
                     {"stage": s.index, "start": s.start, "end": s.end} for s in self.pool.specs()
                 ],
@@ -353,12 +362,14 @@ class MockPool:
                 transport = (
                     latency + (bytes_ * 8 / ((link.bandwidth_mbps if link else 1000) * 1e6)) * 1000
                 )
+                d.busy_ms += compute
                 hops.append(
                     {
                         "stage": r.stage,
                         "member": r.member,
                         "address": r.address,
-                        "sent_bytes": bytes_,
+                        "sent_bytes": int(bytes_ / (self.compress if r.stage > 0 else 1)),
+                        "uncompressed_bytes": bytes_,
                         "received_bytes": 8 if r.stage == len(route) - 1 else seq * 2048,
                         "compute_ms": round(compute, 2),
                         "transport_ms": round(transport, 2),
@@ -392,6 +403,8 @@ class MockPool:
                 recovery = False
             i += 1
         all_hops = [h for p in passes for h in p["hops"]]
+        me.asked += 1
+        me.asked_tokens += len(tokens)
         return {
             "prompt": prompt,
             "completion": "".join(tokens),
@@ -403,6 +416,7 @@ class MockPool:
                 "tokens": len(tokens),
                 "failovers": sum(1 for e in events if e["kind"] == "failover"),
                 "sent_bytes": sum(h["sent_bytes"] for h in all_hops),
+                "uncompressed_bytes": sum(h["uncompressed_bytes"] for h in all_hops),
                 "compute_ms": round(sum(h["compute_ms"] for h in all_hops), 2),
                 "transport_ms": round(sum(h["transport_ms"] for h in all_hops), 2),
             },
@@ -489,10 +503,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool", default="configs/pool-lab.yaml")
     parser.add_argument("--start", type=int, default=5)
+    parser.add_argument(
+        "--compress", type=float, default=1.0, help="pretend the wire is this many times smaller"
+    )
     args = parser.parse_args()
 
     config = LabConfig.from_file(Path(args.pool))
-    mock = MockPool(config, args.start)
+    mock = MockPool(config, args.start, args.compress)
     app = build_app(mock)
     ports = [d.port for d in mock.devices.values()] + [8100]
     servers = [

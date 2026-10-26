@@ -1,0 +1,25 @@
+{
+  "link_mbps": 15.0,
+  "link_ms": 100.0,
+  "device": "cpu",
+  "results": [
+    {
+      "wall_ms": 2157.840499499798,
+      "transport_ms": 1154.57,
+      "compute_ms": 993.1400000000001,
+      "sent_bytes": 562248.0,
+      "uncompressed_bytes": 562248.0,
+      "tokens": 8.0,
+      "label": "pool"
+    },
+    {
+      "wall_ms": 1952.5236065001081,
+      "transport_ms": 921.335,
+      "compute_ms": 980.53,
+      "sent_bytes": 71240.0,
+      "uncompressed_bytes": 562248.0,
+      "tokens": 8.0,
+      "label": "pool-compressed"
+    }
+  ]
+}

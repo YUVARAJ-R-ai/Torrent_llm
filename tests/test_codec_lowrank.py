@@ -160,3 +160,12 @@ def test_lowrank_describe():
     assert desc["rank"] == 128
     assert desc["seed"] == 42
     assert desc["wire_dtype"] is None
+
+
+def test_token_ids_are_not_narrowed_by_the_lowrank_wire_dtype():
+    codec = LowRankCodec(rank=8, wire_dtype="float16")
+    ids = torch.tensor([[151644, 872, 198, 3838, 151935]])
+
+    message = codec.encode(ids, request_id="r", hop=0)
+
+    assert torch.equal(codec.decode(message), ids)

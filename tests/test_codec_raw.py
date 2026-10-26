@@ -8,7 +8,7 @@ dtype survive the trip, and the payload length is what the profiler will see.
 import pytest
 import torch
 
-from torrent_llm.codec import available_codecs, get_codec
+from torrent_llm.codec import RawCodec, available_codecs, get_codec
 from torrent_llm.wire import ActivationHeader, ActivationMessage
 
 
@@ -90,3 +90,22 @@ def test_message_payload_size_is_independent_of_logical_size():
 
     assert msg.header.logical_numel == 262144
     assert msg.payload_bytes == 512
+
+
+def test_token_ids_cross_exactly_whatever_the_wire_dtype():
+    # A real vocabulary has ids far above 2048, the limit of whole numbers in 16-bit floats.
+    ids = torch.tensor([[151644, 872, 198, 3838, 374, 2048, 2049, 151935]])
+
+    for codec in (RawCodec(wire_dtype="float16"), RawCodec(wire_dtype="bfloat16")):
+        message = codec.encode(ids, request_id="r", hop=0)
+
+        assert torch.equal(codec.decode(message), ids)
+        assert message.header.dtype == "int64"
+
+
+def test_activations_are_still_narrowed_by_the_wire_dtype():
+    x = torch.randn(1, 4, 8)
+
+    message = RawCodec(wire_dtype="float16").encode(x, request_id="r", hop=1)
+
+    assert message.payload_bytes == x.numel() * 2
