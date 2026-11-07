@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 import grpc
@@ -17,7 +17,7 @@ import torch
 
 from torrent_llm.codec import get_codec
 from torrent_llm.profile import HopProfiler
-from torrent_llm.runner.config import TopologyConfig
+from torrent_llm.runner.config import NodeConfig, TopologyConfig
 from torrent_llm.sampling import GREEDY, Sampling, select_tokens
 from torrent_llm.transport import HopResult, ShardClient
 
@@ -102,18 +102,24 @@ class ChainRunner:
         *,
         profiler: HopProfiler | None = None,
         token: str | None = None,
+        client_factory: Callable[[int, NodeConfig], ShardClient] | None = None,
     ) -> None:
+        """``client_factory(hop, node)`` builds the client for each hop; the pool uses
+        it to send over its overlay. Without it every hop is a gRPC client."""
         self.config = config
         self.profiler = profiler
-        self.clients = [
-            ShardClient(
-                node.address,
-                get_codec(config.codec, **config.codec_args),
-                link=node.link or config.link,
-                token=token,
-            )
-            for node in config.nodes
-        ]
+        if client_factory is not None:
+            self.clients = [client_factory(i, node) for i, node in enumerate(config.nodes)]
+        else:
+            self.clients = [
+                ShardClient(
+                    node.address,
+                    get_codec(config.codec, **config.codec_args),
+                    link=node.link or config.link,
+                    token=token,
+                )
+                for node in config.nodes
+            ]
 
     def forward(
         self,

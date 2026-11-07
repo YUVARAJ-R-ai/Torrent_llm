@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import grpc
 import torch
 
 from torrent_llm.codec import Codec, get_codec
+from torrent_llm.codec.profiles import CodecSet
 from torrent_llm.link import LinkProfile
 from torrent_llm.sampling import Sampling
 from torrent_llm.transport import activation_pb2 as pb
@@ -91,8 +93,20 @@ class HopResult:
         return self.sent_uncompressed_bytes / self.sent_bytes
 
 
+#: Sends one request and returns the reply, or raises ``grpc.RpcError``. The pool's
+#: overlay supplies one of these; without it the client speaks gRPC to ``address``.
+Sender = Callable[[pb.ForwardRequest], pb.ForwardReply]
+
+
 class ShardClient:
-    """Talks to one shard server."""
+    """Talks to one shard server.
+
+    Args:
+        sender: How requests travel. ``None`` opens a gRPC channel to ``address``
+            (the single-chain research harness); the pool passes a sender that goes
+            over its encrypted overlay instead.
+        codecs: The pool's codec profiles, used to decode replies that name one.
+    """
 
     def __init__(
         self,
@@ -102,20 +116,28 @@ class ShardClient:
         timeout: float = 300.0,
         link: LinkProfile | None = None,
         token: str | None = None,
+        sender: Sender | None = None,
+        codecs: CodecSet | None = None,
     ) -> None:
         self.address = address
         self.codec = codec
+        self.codecs = codecs
         self.timeout = timeout
         #: Optional simulated link (see ``torrent_llm.link``). ``None`` means the
         #: real network decides the timing, which on loopback is almost nothing.
         self.link = link
         #: Shared secret sent with every call, for a pool that requires one.
         self._metadata = ((TOKEN_METADATA, token),) if token else None
-        self.channel = grpc.insecure_channel(address, options=CHANNEL_OPTIONS)
-        self.stub = pb_grpc.ShardServiceStub(self.channel)
+        self.channel: grpc.Channel | None = None
+        if sender is None:
+            self.channel = grpc.insecure_channel(address, options=CHANNEL_OPTIONS)
+            self.stub = pb_grpc.ShardServiceStub(self.channel)
+        self._sender = sender
 
     def info(self) -> pb.InfoReply:
-        """Ask the peer what it hosts."""
+        """Ask the peer what it hosts (gRPC harness only)."""
+        if self.channel is None:
+            raise RuntimeError("info() is only available over gRPC")
         return self.stub.Info(pb.InfoRequest(), timeout=self.timeout, metadata=self._metadata)
 
     def forward(
@@ -132,6 +154,7 @@ class ShardClient:
         expected_cache_position: int | None = None,
         sampling: Sampling | None = None,
         message: ActivationMessage | None = None,
+        codec: Codec | None = None,
     ) -> HopResult:
         """Send one activation and wait for the shard's output.
 
@@ -167,9 +190,12 @@ class ShardClient:
                 bytes per sequence rather than ``vocab_size x 4``.
                 ``logits_keep_last`` does not apply. Ignored by every other
                 shard.
+            codec: Encode this hop with ``codec`` instead of the client's own (the
+                pool picks one per hop from the link it measured).
         """
+        codec = codec or self.codec
         request_id = request_id or uuid.uuid4().hex
-        if _can_forward_untouched(message, self.codec, request_id, hop, is_token_ids):
+        if _can_forward_untouched(message, codec, request_id, hop, is_token_ids):
             # The previous hop's reply is already in this codec's format, addressed to
             # this hop. Send its bytes on as they are: no decode, no encode, and no
             # second round of compression loss.
@@ -178,7 +204,7 @@ class ShardClient:
             uncompressed_bytes = encoded.header.logical_numel * _element_size(encoded.header.dtype)
         else:
             t_encode_start = time.perf_counter_ns()
-            encoded = self.codec.encode(tensor, request_id=request_id, hop=hop)
+            encoded = codec.encode(tensor, request_id=request_id, hop=hop)
             encode_ns = time.perf_counter_ns() - t_encode_start
             uncompressed_bytes = tensor.numel() * tensor.element_size()
         message = encoded
@@ -207,15 +233,20 @@ class ShardClient:
             # Inside the timed window on purpose: the shaped delay has to land
             # in transport_ns, where a real link's cost would.
             time.sleep(self.link.one_way_s(message.payload_bytes))
-        reply = self.stub.Forward(request, timeout=self.timeout, metadata=self._metadata)
+        if self._sender is not None:
+            reply = self._sender(request)
+        else:
+            reply = self.stub.Forward(request, timeout=self.timeout, metadata=self._metadata)
         if self.link is not None:
             time.sleep(self.link.one_way_s(len(reply.payload)))
         wall_ns = time.perf_counter_ns() - started
 
         t_decode_start = time.perf_counter_ns()
         reply_msg = message_from_proto(reply.header, reply.payload)
-        if reply_msg.header.codec == self.codec.name:
-            out = self.codec.decode(reply_msg)
+        if reply_msg.header.codec == codec.name:
+            out = codec.decode(reply_msg)
+        elif self.codecs is not None and reply_msg.header.codec in self.codecs:
+            out = self.codecs.decode(reply_msg)
         else:
             out = get_codec(reply_msg.header.codec).decode(reply_msg)
         decode_ns = time.perf_counter_ns() - t_decode_start
@@ -238,7 +269,8 @@ class ShardClient:
         )
 
     def close(self) -> None:
-        self.channel.close()
+        if self.channel is not None:
+            self.channel.close()
 
     def __enter__(self) -> ShardClient:
         return self
