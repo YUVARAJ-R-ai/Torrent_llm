@@ -1,0 +1,23 @@
+Pool: Qwen/Qwen3-0.6B, 4 device(s) online, health healthy
+Stage copies ready: [2, 2] (each stage wants 2)
+Compression: raw
+  A                alive    active    cpu    holds stage 1
+  B                alive    active    cpu    holds stage 2
+  C                alive    active    cpu    holds stage 1
+  D                alive    active    cpu    holds stage 2
+
+Asking each device: 'What is the capital of France?'
+  A                  2.1s  via C -> B, traffic 1.0x smaller
+                   'The capital of France is Paris.'
+  B                  2.0s  via C -> D, traffic 1.0x smaller
+                   'The capital of France is Paris.'
+  C                  2.1s  via A -> B, traffic 1.0x smaller
+                   'The capital of France is Paris.'
+  D                  2.0s  via C -> D, traffic 1.0x smaller
+                   'The capital of France is Paris.'
+  OK    every device gave the same answer
+
+Asking five questions at once through different devices...
+  OK    all five answered in 3.7s (slowest 3.7s)
+
+All checks passed.

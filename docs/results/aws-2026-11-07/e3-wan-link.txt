@@ -1,0 +1,3 @@
+tcp connect RTT ms: median 62.2 min 61.4
+2 MB in 0.56s -> 30 Mbit/s single flow
+20 MB in 0.80s -> 209 Mbit/s single flow
