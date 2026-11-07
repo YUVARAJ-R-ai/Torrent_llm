@@ -1,0 +1,336 @@
+/**
+ * Runs the device (torrent-peer) for the app: finds it, installs it if missing,
+ * starts it in the chosen swarm, watches it, and stops it cleanly.
+ *
+ * The app never needs a terminal: everything the one-command installer does, the
+ * app can do with the installer script it ships with (extraResources/install).
+ * Invite links are secrets, so they are passed to the process as an argument but
+ * redacted from every log line the app keeps or shows.
+ */
+
+import { type ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
+
+import type { AppSettings, BackendStatus, StartOptions } from "../shared/types";
+import { adminTokenPath, installedAppDir, installedExecutable } from "./paths";
+
+const LOG_LINES = 2000;
+const START_TIMEOUT_MS = 15 * 60 * 1000; // first start downloads and loads the model
+const STOP_GRACE_MS = 10_000;
+const INVITE = /tllm:\/\/join\/[A-Za-z0-9_-]+/g;
+
+/** Hide invite links (secrets) in anything shown or stored. */
+export function redact(line: string): string {
+  return line.replace(INVITE, "tllm://join/<hidden>");
+}
+
+/** The torrent-peer command line for a start request. Pure, for tests. */
+export function buildArgs(options: StartOptions, settings: AppSettings, poolFile: string | null): string[] {
+  const args: string[] = [options.mode];
+  if (options.mode === "join") {
+    if (!options.invite || !options.invite.trim().startsWith("tllm://join/")) {
+      throw new Error("Paste the invite link first (it starts with tllm://join/).");
+    }
+    args.push(options.invite.trim());
+  }
+  if (options.mode === "create" && options.swarmName?.trim()) {
+    args.push("--swarm-name", options.swarmName.trim().slice(0, 80));
+  }
+  if (poolFile) args.push("--pool", poolFile);
+  if (settings.label.trim()) args.push("--name", settings.label.trim().slice(0, 64));
+  if (settings.memoryMb > 0) args.push("--memory-mb", String(Math.floor(settings.memoryMb)));
+  args.push("--port", String(settings.controlPort), "--listen-port", String(settings.listenPort));
+  for (const address of settings.bootstrap) {
+    if (address.trim()) args.push("--bootstrap", address.trim());
+  }
+  if (!settings.upnp) args.push("--no-upnp");
+  if (settings.relay) args.push("--relay");
+  return args;
+}
+
+export interface BackendDeps {
+  /** Returns true when http://127.0.0.1:<port>/health answers. */
+  health(port: number): Promise<boolean>;
+  /** Asks the device to leave the swarm (POST /admin/leave). */
+  leave(port: number, token: string): Promise<void>;
+  exists(file: string): boolean;
+  readToken(): string | null;
+  spawn: typeof spawn;
+  platform: NodeJS.Platform;
+  resourcesPath: string;
+  now(): number;
+}
+
+export class BackendManager extends EventEmitter {
+  private status: BackendStatus = {
+    phase: "stopped",
+    message: "",
+    executable: "",
+    url: "",
+    pid: null,
+    mode: null,
+    startedAt: null,
+  };
+  private child: ChildProcess | null = null;
+  private logs: string[] = [];
+  private stopping = false;
+
+  constructor(
+    private readonly deps: BackendDeps,
+    private readonly getSettings: () => AppSettings,
+  ) {
+    super();
+    this.refreshPresence();
+  }
+
+  // --- reading -----------------------------------------------------------------
+
+  current(): BackendStatus {
+    return { ...this.status };
+  }
+
+  recentLogs(): string[] {
+    return [...this.logs];
+  }
+
+  adminToken(): string | null {
+    return this.deps.readToken();
+  }
+
+  /** The executable to run, or "" if none is found. */
+  locate(): string {
+    const configured = this.getSettings().executable.trim();
+    if (configured) return this.deps.exists(configured) ? configured : "";
+    const fromEnv = process.env.TORRENT_PEER;
+    if (fromEnv && this.deps.exists(fromEnv)) return fromEnv;
+    const installed = installedExecutable({ platform: this.deps.platform });
+    return this.deps.exists(installed) ? installed : "";
+  }
+
+  /** The pool file of the installed copy, so every device uses the same settings. */
+  poolFile(): string | null {
+    const file = path.join(installedAppDir({ platform: this.deps.platform }), "configs", "pool.yaml");
+    return this.deps.exists(file) ? file : null;
+  }
+
+  // --- changing --------------------------------------------------------------------
+
+  async start(options: StartOptions): Promise<BackendStatus> {
+    if (this.child) throw new Error("The device is already running. Stop it first.");
+    const executable = this.locate();
+    if (!executable) {
+      this.set({ phase: "missing", message: "Torrent-LLM is not installed on this computer yet.", executable: "" });
+      throw new Error(this.status.message);
+    }
+    const settings = this.getSettings();
+    const args = buildArgs(options, settings, this.poolFile());
+    this.logs = [];
+    this.log(`$ torrent-peer ${redact(args.join(" "))}`);
+    const child = this.deps.spawn(executable, args, {
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+      windowsHide: true,
+      detached: this.deps.platform !== "win32", // own process group, so stop() can end it all
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    this.child = child;
+    this.stopping = false;
+    this.set({
+      phase: "starting",
+      message: "Starting the device (the first start downloads the model)...",
+      executable,
+      url: `http://127.0.0.1:${settings.controlPort}`,
+      pid: child.pid ?? null,
+      mode: options.mode,
+      startedAt: this.deps.now(),
+    });
+    child.stdout?.on("data", (chunk: Buffer) => this.lines(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => this.lines(chunk));
+    child.on("error", (error) => {
+      this.child = null;
+      this.set({ phase: "error", message: `Could not start torrent-peer: ${error.message}`, pid: null });
+    });
+    child.on("exit", (code, signal) => {
+      this.child = null;
+      if (this.stopping) {
+        this.set({ phase: "stopped", message: "Stopped.", pid: null, url: "" });
+      } else {
+        const tail = this.logs.slice(-3).join(" ").slice(-300);
+        this.set({
+          phase: "error",
+          message: `The device stopped unexpectedly (${signal ?? `exit ${code}`}). ${tail}`,
+          pid: null,
+        });
+      }
+    });
+    void this.waitUntilHealthy(settings.controlPort, child);
+    return this.current();
+  }
+
+  async stop(): Promise<BackendStatus> {
+    const child = this.child;
+    if (!child) return this.current();
+    this.stopping = true;
+    this.set({ phase: "stopping", message: "Leaving the swarm..." });
+    const token = this.deps.readToken();
+    const port = this.getSettings().controlPort;
+    if (token) {
+      try {
+        await this.deps.leave(port, token);
+      } catch {
+        // The process may already be on its way out; the kill below covers it.
+      }
+    }
+    const exited = await this.waitForExit(child, STOP_GRACE_MS);
+    if (!exited) this.kill(child);
+    return this.current();
+  }
+
+  /** Runs the bundled installer (no swarm argument: install only). */
+  async install(): Promise<BackendStatus> {
+    if (this.child) throw new Error("Stop the device before reinstalling.");
+    const dir = path.join(this.deps.resourcesPath, "install");
+    const [command, args] =
+      this.deps.platform === "win32"
+        ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(dir, "install.ps1")]]
+        : ["sh", [path.join(dir, "install.sh")]];
+    this.logs = [];
+    this.set({ phase: "installing", message: "Installing Torrent-LLM (this downloads about 3 GB)..." });
+    const child = this.deps.spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout?.on("data", (chunk: Buffer) => this.lines(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => this.lines(chunk));
+    const code = await new Promise<number | null>((resolve) => {
+      child.on("exit", (c) => resolve(c));
+      child.on("error", (e) => {
+        this.log(`installer failed to start: ${e.message}`);
+        resolve(-1);
+      });
+    });
+    if (code === 0) {
+      this.refreshPresence();
+      this.set({ message: "Installed. Choose how to join and press Start." });
+    } else {
+      this.set({ phase: "error", message: `The installer failed (exit ${code}). See Diagnostics for its output.` });
+    }
+    return this.current();
+  }
+
+  dispose(): void {
+    if (this.child) {
+      this.stopping = true;
+      this.kill(this.child);
+    }
+  }
+
+  // --- internals -------------------------------------------------------------------
+
+  private refreshPresence(): void {
+    const executable = this.locate();
+    this.status = {
+      ...this.status,
+      executable,
+      phase: executable ? "stopped" : "missing",
+      message: executable ? "" : "Torrent-LLM is not installed on this computer yet.",
+    };
+  }
+
+  private set(patch: Partial<BackendStatus>): void {
+    this.status = { ...this.status, ...patch };
+    this.emit("status", this.current());
+  }
+
+  private lines(chunk: Buffer): void {
+    for (const line of chunk.toString("utf8").split(/\r?\n/)) {
+      if (line.trim()) this.log(line);
+    }
+  }
+
+  private log(line: string): void {
+    const clean = redact(line);
+    this.logs.push(clean);
+    if (this.logs.length > LOG_LINES) this.logs.splice(0, this.logs.length - LOG_LINES);
+    this.emit("log", clean);
+  }
+
+  private async waitUntilHealthy(port: number, child: ChildProcess): Promise<void> {
+    const deadline = this.deps.now() + START_TIMEOUT_MS;
+    while (this.child === child && this.deps.now() < deadline) {
+      if (await this.deps.health(port).catch(() => false)) {
+        if (this.child === child && this.status.phase === "starting") {
+          this.set({ phase: "running", message: "Running." });
+        }
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (this.child === child && this.status.phase === "starting") {
+      this.set({ phase: "error", message: "The device did not come up in time. See Diagnostics." });
+    }
+  }
+
+  private waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
+    if (child.exitCode !== null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), ms);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  }
+
+  private kill(child: ChildProcess): void {
+    if (child.pid == null) return;
+    if (this.deps.platform === "win32") {
+      // The whole tree: torrent-peer may have started helpers.
+      this.deps.spawn("taskkill", ["/T", "/F", "/PID", String(child.pid)], { windowsHide: true });
+      return;
+    }
+    try {
+      process.kill(-child.pid, "SIGKILL"); // the process group made by detached: true
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }
+}
+
+/** Production dependencies. */
+export function realDeps(resourcesPath: string): BackendDeps {
+  return {
+    async health(port) {
+      const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
+      return response.ok;
+    },
+    async leave(port, token) {
+      await fetch(`http://127.0.0.1:${port}/admin/leave`, {
+        method: "POST",
+        headers: { "x-pool-token": token },
+        signal: AbortSignal.timeout(3000),
+      });
+    },
+    exists: (file) => {
+      try {
+        return fs.statSync(file).isFile();
+      } catch {
+        return false;
+      }
+    },
+    readToken: () => {
+      try {
+        const token = fs.readFileSync(adminTokenPath(), "utf8").trim();
+        return token.length >= 32 ? token : null;
+      } catch {
+        return null;
+      }
+    },
+    spawn,
+    platform: process.platform,
+    resourcesPath,
+    now: () => Date.now(),
+  };
+}
