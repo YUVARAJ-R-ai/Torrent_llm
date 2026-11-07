@@ -21,6 +21,9 @@ dependencies = [
     "grpcio>=1.66",
     "protobuf>=5.27",
     "pyyaml>=6.0",
+    # The overlay's encryption and identities (X25519, Ed25519, ChaCha20-Poly1305,
+    # HKDF). Wheels exist for Windows, macOS and Linux; the stdlib has none of these.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
