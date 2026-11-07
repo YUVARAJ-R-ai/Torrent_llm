@@ -19,11 +19,16 @@ moment, which is why there is a "suspect" stage in between.
 
 from __future__ import annotations
 
+import base64
+import dataclasses
+import json
 import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from torrent_llm.net.identity import Identity, peer_id_of, verify_signature
 
 #: Device states, chosen by the device's owner.
 ACTIVE = "active"  # lending resources and accepting work
@@ -88,6 +93,12 @@ class Member:
     asked_tokens: int = 0
     incarnation: int = 0
     heartbeat: int = 0
+    #: Over the overlay a device's ``name`` is its peer id, and its row is signed by
+    #: the key behind that id, so nobody can forge or alter another device's entry.
+    #: ``pubkey`` and ``sig`` are base64; ``addrs`` are overlay addresses.
+    pubkey: str = ""
+    addrs: tuple[str, ...] = ()
+    sig: str = ""
 
     @property
     def stamp(self) -> tuple[int, int]:
@@ -108,9 +119,57 @@ class Member:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Member:
+        """Build from wire form. ``ValueError`` on anything malformed (it is untrusted)."""
+        if not isinstance(raw, dict):
+            raise ValueError("member entry is not an object")
+        allowed = {f.name for f in dataclasses.fields(cls)}
+        unknown = raw.keys() - allowed
+        if unknown:
+            raise ValueError(f"member entry has unknown keys: {sorted(unknown)[:5]}")
         fields = dict(raw)
-        fields["hosting"] = tuple(HostedStage.from_dict(h) for h in fields.get("hosting", ()))
-        return cls(**fields)
+        try:
+            hosting = fields.get("hosting", ())
+            if not isinstance(hosting, list | tuple) or len(hosting) > 64:
+                raise ValueError("bad hosting list")
+            fields["hosting"] = tuple(HostedStage.from_dict(h) for h in hosting)
+            addrs = fields.get("addrs", ())
+            if not isinstance(addrs, list | tuple) or len(addrs) > 16:
+                raise ValueError("bad address list")
+            fields["addrs"] = tuple(str(a) for a in addrs)
+            member = cls(**fields)
+        except (TypeError, AttributeError) as exc:
+            raise ValueError(f"member entry is malformed: {exc}") from exc
+        if not isinstance(member.name, str) or not isinstance(member.heartbeat, int):
+            raise ValueError("member entry is malformed")
+        return member
+
+    def signed_bytes(self) -> bytes:
+        """Canonical bytes covered by ``sig``: every field except ``sig``."""
+        data = self.to_dict()
+        data.pop("sig")
+        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+
+    def signed_by(self, identity: Identity) -> Member:
+        """This entry with ``pubkey`` and ``sig`` set by ``identity`` (whose peer id
+        must be ``name``)."""
+        if identity.peer_id != self.name:
+            raise ValueError("a device can only sign its own entry")
+        unsigned = dataclasses.replace(
+            self, pubkey=base64.b64encode(identity.public_key).decode(), sig=""
+        )
+        signature = identity.sign(unsigned.signed_bytes())
+        return dataclasses.replace(unsigned, sig=base64.b64encode(signature).decode())
+
+    def verify(self) -> bool:
+        """True when the entry is signed by the key behind its ``name``."""
+        try:
+            public = base64.b64decode(self.pubkey, validate=True)
+            signature = base64.b64decode(self.sig, validate=True)
+            return peer_id_of(public) == self.name and verify_signature(
+                public, signature, self.signed_bytes()
+            )
+        except (ValueError, TypeError):
+            return False
 
 
 @dataclass
@@ -141,8 +200,13 @@ class MemberTable:
         suspect_after: float = 2.5,
         down_after: float = 6.0,
         clock: Callable[[], float] = time.monotonic,
+        require_signatures: bool = False,
+        max_members: int = 4096,
     ) -> None:
         self.me = me
+        #: Drop entries that are not signed by their own device (the overlay pool).
+        self.require_signatures = require_signatures
+        self.max_members = max_members
         self.suspect_after = suspect_after
         self.down_after = down_after
         self._clock = clock
@@ -182,10 +246,48 @@ class MemberTable:
                         self.name_clashes.add(f"{member.host}:{member.control_port}")
                     continue
                 known = self._seen.get(member.name)
+                if known is None and len(self._seen) >= self.max_members:
+                    continue
                 if known is None or member.stamp > known.member.stamp:
+                    if self.require_signatures and not member.verify():
+                        continue
                     self._seen[member.name] = _Seen(member=member, last_advance=now)
                     changed.append(member.name)
         return changed
+
+    def stamps(self) -> dict[str, list[int]]:
+        """``{name: [incarnation, heartbeat]}`` for every entry: the gossip digest."""
+        with self._lock:
+            return {n: list(s.member.stamp) for n, s in self._seen.items()}
+
+    def newer_than(self, stamps: dict[str, Any], *, limit: int = 512) -> list[Member]:
+        """Entries the holder of ``stamps`` lacks or holds an older version of."""
+        out: list[Member] = []
+        with self._lock:
+            for name, seen in self._seen.items():
+                theirs = stamps.get(name)
+                try:
+                    older = theirs is None or tuple(theirs) < seen.member.stamp
+                except TypeError:
+                    older = True
+                if older:
+                    out.append(seen.member)
+                    if len(out) >= limit:
+                        break
+        return out
+
+    def forget(self, older_than_s: float) -> list[str]:
+        """Drop entries that have been down (or gone) for ``older_than_s`` seconds."""
+        now = self._clock()
+        with self._lock:
+            stale = [
+                n
+                for n, s in self._seen.items()
+                if n != self.me and now - s.last_advance > older_than_s
+            ]
+            for name in stale:
+                del self._seen[name]
+        return stale
 
     # --- reading -----------------------------------------------------------
 
