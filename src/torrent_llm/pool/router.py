@@ -45,7 +45,9 @@ class Replica:
 
     @property
     def address(self) -> str:
-        return f"{self.host}:{self.port}"
+        """Names this copy for load and latency bookkeeping. Over the overlay a stage
+        has no port of its own, so it is named by device and stage."""
+        return f"{self.host}:{self.port}" if self.port else f"{self.member}#{self.stage}"
 
 
 def replicas_of(
@@ -68,7 +70,7 @@ def replicas_of(
         hosted = m.hosts(stage, ready_only=True)
         if hosted is None or hosted.status != READY:
             continue
-        address = f"{m.host}:{hosted.port}"
+        address = f"{m.host}:{hosted.port}" if hosted.port else f"{m.name}#{stage}"
         found.append(
             Replica(
                 stage=stage,
