@@ -39,7 +39,11 @@ class Announcement:
     host: str
     port: int
     #: Identifies the pool (model and shape), so two groups on one network do not mix.
+    #: In a swarm it is a tag derived from the swarm id and secret, which reveals neither.
     pool: str
+    #: In a swarm: the device's signed peer record, so a listener can dial it at once
+    #: and nobody can announce an address on someone else's behalf.
+    record: dict | None = None
 
     @property
     def address(self) -> str:
@@ -53,6 +57,7 @@ class Announcement:
                 "host": self.host,
                 "port": self.port,
                 "pool": self.pool,
+                **({"record": self.record} if self.record is not None else {}),
             }
         ).encode()
 
@@ -68,6 +73,7 @@ class Announcement:
                 host=str(raw["host"]),
                 port=int(raw["port"]),
                 pool=str(raw["pool"]),
+                record=raw["record"] if isinstance(raw.get("record"), dict) else None,
             )
         except (ValueError, KeyError, TypeError, UnicodeDecodeError, AttributeError):
             return None

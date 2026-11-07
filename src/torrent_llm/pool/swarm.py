@@ -24,6 +24,7 @@ It repeats 3-4 every ``refresh_s`` and whenever the device is alone.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -40,7 +41,9 @@ from torrent_llm.net.dht import Dht, topic_key
 from torrent_llm.net.identity import PUBLIC_POW_BITS
 from torrent_llm.net.invite import Invite
 from torrent_llm.net.node import Node
+from torrent_llm.net.records import PeerRecord, TcpAddress
 from torrent_llm.net.relay import Relay
+from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,14 @@ class SwarmSpec:
         return cls(**data)
 
 
+def swarm_tag(spec: SwarmSpec) -> str:
+    """What LAN announcements carry to say which swarm they belong to. Derived from
+    the secret, so it reveals neither the swarm id nor the secret, and two swarms on
+    one network never mix."""
+    secret = spec.psk or b""
+    return "swarm-" + hashlib.sha256(b"tllm-lan" + spec.swarm_id.encode() + secret).hexdigest()[:16]
+
+
 def save_swarm(directory: Path, spec: SwarmSpec) -> Path:
     """Remember a joined swarm (it holds the secret: owner-only permissions)."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -155,8 +166,13 @@ class SwarmServices:
         use_upnp: bool = True,
         refresh_s: float = 120.0,
         relay_always: bool = False,
+        lan_discovery: bool = True,
+        discovery_port: int = DISCOVERY_PORT,
     ) -> None:
         self.node = node
+        self.lan_discovery = lan_discovery
+        self.discovery_port = discovery_port
+        self.discovery: Discovery | None = None
         self.spec = spec
         self.use_upnp = use_upnp
         self.refresh_s = refresh_s
@@ -175,12 +191,16 @@ class SwarmServices:
         self.relay.attach()
         self.autonat.attach()
         self.dht.attach()
+        if self.lan_discovery:
+            self._start_lan()
         self._thread = threading.Thread(target=self._run, name="swarm-services", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._kick.set()
+        if self.discovery is not None:
+            self.discovery.stop()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         self.relay.detach()
@@ -193,6 +213,54 @@ class SwarmServices:
                 )
             except Exception as exc:  # noqa: BLE001 - best effort on the way out
                 logger.debug("removing the port mapping failed: %s", exc)
+
+    # --- the local network ----------------------------------------------------
+    #
+    # On a phone hotspot or one Wi-Fi, members find each other by broadcast as soon as
+    # one of them has joined with the invite: no address typing at all. Announcements
+    # carry the signed peer record; a listener checks the signature before dialling.
+
+    def _announcement(self) -> Announcement:
+        record = self.node.record()
+        lan = next(
+            (a for a in record.parsed_addresses() if isinstance(a, TcpAddress) and a.is_private),
+            None,
+        )
+        return Announcement(
+            name=self.node.peer_id,
+            host=lan.host if lan else "",
+            port=self.node.listen_port,
+            pool=swarm_tag(self.spec),
+            record=record.to_dict(),
+        )
+
+    def _start_lan(self) -> None:
+        try:
+            self.discovery = Discovery(
+                self._announcement(), self._heard, port=self.discovery_port
+            )
+            self.discovery.start()
+        except OSError as exc:
+            logger.info("LAN discovery unavailable here: %s", exc)
+            self.discovery = None
+
+    def _heard(self, found: Announcement) -> None:
+        if self.discovery is not None:
+            self.discovery.me = self._announcement()  # keep our own up to date
+        if found.record is None or found.name == self.node.peer_id:
+            return
+        try:
+            record = PeerRecord.from_dict(found.record)
+        except ValueError:
+            return
+        if record.peer_id != found.name or not self.node.add_record(record):
+            return
+        if not self.node.is_connected(record.peer_id):
+            try:
+                self.node.call(record.peer_id, "node.ping", timeout=5.0)
+                logger.info("found %s on this network", record.peer_id[:8])
+            except Exception as exc:  # noqa: BLE001 - it may have just left
+                logger.debug("LAN peer %s unreachable: %s", record.peer_id[:8], exc)
 
     def refresh_now(self) -> None:
         """Re-check reachability and look for peers without waiting for the timer."""
