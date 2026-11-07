@@ -174,6 +174,11 @@ def main(argv: list[str] | None = None) -> int:
         print(report(checks))
         return 1 if any(c.status == FAIL for c in checks) else 0
 
+    if args.mode:
+        from torrent_llm.pool import swarm_cli
+
+        return swarm_cli.main(args, settings)
+
     config, profile = settings.config, settings.profile
 
     try:
@@ -243,7 +248,61 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["RunningPeer", "launch", "main"]
+def start_pool_device(settings: PeerSettings, *, node, ui_lan: bool = False) -> RunningPeer:
+    """Run the pool device on an overlay ``node`` (the swarm modes).
+
+    The control panel listens on 127.0.0.1 (or on the LAN with ``ui_lan``) and its
+    owner actions need the admin token from the data directory.
+    """
+    from transformers import AutoTokenizer
+
+    from torrent_llm.chat import stop_token_ids
+    from torrent_llm.pool.net import lan_address
+    from torrent_llm.pool.swarm_cli import admin_token
+
+    config, profile = settings.config, settings.profile
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model_id, trust_remote_code=config.trust_remote_code
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not load {config.model_id} ({exc}). The model is probably not "
+            "downloaded: connect to the internet and run scripts/setup.sh "
+            "(scripts\\setup.ps1 on Windows)."
+        ) from exc
+
+    def loader(spec: ShardSpec):
+        return load_shard(
+            config.model_id,
+            spec,
+            device=profile.device,
+            dtype=getattr(torch, config.dtype),
+            trust_remote_code=config.trust_remote_code,
+        )
+
+    host = lan_address() if ui_lan else "127.0.0.1"
+    peer = launch(
+        config,
+        profile,
+        loader,
+        tokenizer,
+        host=host,
+        port=settings.port,
+        bind="0.0.0.0" if ui_lan else "127.0.0.1",
+        join=[],
+        token=admin_token(),
+        cors_origins=settings.cors_origins,
+        cors_regex=settings.cors_regex,
+        stop_token_ids=stop_token_ids(config.model_id, tokenizer),
+        discover=False,
+        node=node,
+    )
+    print(f"  Control panel: http://{host}:{peer.port}", flush=True)
+    return peer
+
+
+__all__ = ["RunningPeer", "launch", "main", "start_pool_device"]
 
 if __name__ == "__main__":
     sys.exit(main())
