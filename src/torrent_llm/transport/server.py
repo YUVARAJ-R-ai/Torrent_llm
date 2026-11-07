@@ -20,6 +20,7 @@ import torch
 from transformers.cache_utils import Cache
 
 from torrent_llm.codec import Codec, RawCodec
+from torrent_llm.codec.profiles import CodecSet
 from torrent_llm.sampling import Sampling, select_tokens
 from torrent_llm.shard import ShardRuntime, ShardSpec
 from torrent_llm.transport import activation_pb2 as pb
@@ -54,9 +55,13 @@ class ShardService(pb_grpc.ShardServiceServicer):
         *,
         model_id: str = "unknown",
         session_ttl_seconds: float = 300.0,
+        codecs: CodecSet | None = None,
     ) -> None:
         self.runtime = runtime
         self.codec = codec
+        #: With profiles, a request is decoded by the profile it names and the reply
+        #: goes back in that same profile; an unknown profile raises UnknownProfile.
+        self.codecs = codecs
         self.model_id = model_id
         # Logits are the answer, not an intermediate activation. Compressing
         # them would corrupt the very quality metric the benchmark reports, so
@@ -87,7 +92,10 @@ class ShardService(pb_grpc.ShardServiceServicer):
 
     def _forward(self, request: pb.ForwardRequest) -> pb.ForwardReply:
         message = message_from_proto(request.header, request.payload)
-        tensor = self.codec.decode(message)
+        in_codec = (
+            self.codecs.codec(message.header.codec) if self.codecs is not None else self.codec
+        )
+        tensor = in_codec.decode(message)
 
         position_ids = (
             torch.tensor(list(request.position_ids), dtype=torch.long).unsqueeze(0)
@@ -132,7 +140,8 @@ class ShardService(pb_grpc.ShardServiceServicer):
         if self.runtime.spec.is_last and not choose_token:
             tensor = _trim_logits(tensor, request.logits_keep_last)
 
-        reply_message = self.output_codec.encode(
+        out_codec = self.output_codec if self.runtime.spec.is_last else in_codec
+        reply_message = out_codec.encode(
             tensor,
             request_id=message.header.request_id,
             hop=message.header.hop + 1,

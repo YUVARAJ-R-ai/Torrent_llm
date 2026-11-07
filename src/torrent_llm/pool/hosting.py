@@ -16,17 +16,21 @@ import gc
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import grpc
 import torch
 
 from torrent_llm.codec import Codec, RawCodec
+from torrent_llm.codec.profiles import CodecSet
 from torrent_llm.pool.members import FAILED, LOADING, READY, HostedStage
 from torrent_llm.shard import ShardRuntime, ShardSpec
+from torrent_llm.transport import activation_pb2 as pb
 from torrent_llm.transport import serve
 from torrent_llm.transport.auth import TokenInterceptor
+from torrent_llm.transport.server import ShardService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,18 @@ logger = logging.getLogger(__name__)
 FAILURE_COOLDOWN_S = 20.0
 
 Loader = Callable[[ShardSpec], ShardRuntime]
+
+#: How a device's stages are reached: a gRPC server per stage (the original pool and
+#: the single-chain harness), or method calls over the device's encrypted overlay.
+GRPC, OVERLAY = "grpc", "overlay"
+
+
+class NotHosted(LookupError):
+    """The stage asked for is not ready on this device (not held, loading or failed)."""
+
+
+class Busy(RuntimeError):
+    """The stage is at its limit and refused a new question before doing any work."""
 
 
 class LoadCounter(grpc.ServerInterceptor):
@@ -55,6 +71,31 @@ class LoadCounter(grpc.ServerInterceptor):
         #: Nanoseconds spent inside forward passes, all callers together.
         self.busy_ns = 0
 
+    def admit(self, request) -> bool:
+        """Whether ``request`` may start now. Only a new question can be refused."""
+        if self.limit is None or not _starts_a_question(request):
+            return True
+        with self._lock:
+            if self.active >= self.limit:
+                self.rejected += 1
+                return False
+            return True
+
+    @contextmanager
+    def track(self) -> Iterator[None]:
+        """Count one forward pass while it runs."""
+        with self._lock:
+            self.active += 1
+        started = time.perf_counter_ns()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter_ns() - started
+            with self._lock:
+                self.active -= 1
+                self.served += 1
+                self.busy_ns += elapsed
+
     def intercept_service(self, continuation, handler_call_details):
         handler = continuation(handler_call_details)
         if handler is None or not handler_call_details.method.endswith("/Forward"):
@@ -64,29 +105,15 @@ class LoadCounter(grpc.ServerInterceptor):
         inner = handler.unary_unary
 
         def counted(request, context):
-            if self.limit is not None and _starts_a_question(request):
-                with self._lock:
-                    full = self.active >= self.limit
-                    if full:
-                        self.rejected += 1
-                if full:
-                    # Refused before any work, so nothing needs undoing: the requester
-                    # simply asks another copy.
-                    context.abort(
-                        grpc.StatusCode.RESOURCE_EXHAUSTED,
-                        "this device is at its limit right now",
-                    )
-            with self._lock:
-                self.active += 1
-            started = time.perf_counter_ns()
-            try:
+            if not self.admit(request):
+                # Refused before any work, so nothing needs undoing: the requester
+                # simply asks another copy.
+                context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    "this device is at its limit right now",
+                )
+            with self.track():
                 return inner(request, context)
-            finally:
-                elapsed = time.perf_counter_ns() - started
-                with self._lock:
-                    self.active -= 1
-                    self.served += 1
-                    self.busy_ns += elapsed
 
         return grpc.unary_unary_rpc_method_handler(
             counted,
@@ -115,6 +142,7 @@ class _Held:
     port: int = 0
     runtime: ShardRuntime | None = None
     server: grpc.Server | None = None
+    service: ShardService | None = None
     counter: LoadCounter = field(default_factory=LoadCounter)
     failed_at: float = 0.0
     error: str = ""
@@ -146,7 +174,13 @@ class ShardHost:
         port_base: int = 0,
         max_requests: int | None = None,
         clock: Callable[[], float] = time.monotonic,
+        transport: str = GRPC,
+        codecs: CodecSet | None = None,
     ) -> None:
+        if transport not in (GRPC, OVERLAY):
+            raise ValueError(f"transport must be {GRPC!r} or {OVERLAY!r}")
+        self.transport = transport
+        self._codecs = codecs
         self._max_requests = max_requests
         #: First port for shard servers: stage ``s`` listens on ``port_base + s``. Zero
         #: lets the system choose, which suits several devices on one machine; fixed
@@ -237,6 +271,7 @@ class ShardHost:
             held.server.stop(grace=1.0).wait(2.0)
         held.runtime = None
         held.server = None
+        held.service = None
         _release_memory()
         logger.info("stopped stage %d", stage)
 
@@ -257,7 +292,28 @@ class ShardHost:
 
     # --- the load itself -------------------------------------------------------
 
+    def forward(self, stage: int, request: pb.ForwardRequest) -> pb.ForwardReply:
+        """Run one forward pass of ``stage`` (overlay transport).
+
+        Raises:
+            NotHosted: the stage is not ready here.
+            Busy: at the limit; refused before any work.
+            CacheSessionLost, UnknownProfile, ValueError: from the shard itself.
+        """
+        with self._lock:
+            held = self._held.get(stage)
+            service = held.service if held is not None and held.status == READY else None
+        if held is None or service is None:
+            raise NotHosted(f"stage {stage} is not ready on this device")
+        if not held.counter.admit(request):
+            raise Busy("this device is at its limit right now")
+        with held.counter.track():
+            return service._forward(request)
+
     def _load(self, held: _Held) -> None:
+        if self.transport == OVERLAY:
+            self._load_overlay(held)
+            return
         try:
             runtime = self._loader(held.spec)
             if held.cancelled:
@@ -289,6 +345,28 @@ class ShardHost:
             held.port = port
             held.status = READY
         logger.info("stage %d ready on port %d (%s)", held.stage, port, runtime.device)
+
+
+    def _load_overlay(self, held: _Held) -> None:
+        try:
+            runtime = self._loader(held.spec)
+            service = ShardService(
+                runtime, self._codec, model_id=self._model_id, codecs=self._codecs
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed load must not kill the device
+            logger.exception("loading stage %d failed", held.stage)
+            with self._lock:
+                held.status = FAILED
+                held.error = str(exc)
+                held.failed_at = self._clock()
+            return
+        with self._lock:
+            if held.cancelled:
+                return
+            held.runtime = runtime
+            held.service = service
+            held.status = READY
+        logger.info("stage %d ready (%s)", held.stage, runtime.device)
 
 
 def _release_memory() -> None:
