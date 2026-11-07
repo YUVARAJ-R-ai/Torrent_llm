@@ -585,6 +585,7 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+@pytest.mark.network
 def test_devices_on_one_network_find_each_other_with_no_address(model_factory, num_layers):
     import socket
 

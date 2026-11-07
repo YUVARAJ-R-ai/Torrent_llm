@@ -58,6 +58,9 @@ packages = ["src/torrent_llm"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = [
+    "network: needs the internet or a real broadcast-capable network (skipped in CI)",
+]
 
 [tool.ruff]
 line-length = 100
