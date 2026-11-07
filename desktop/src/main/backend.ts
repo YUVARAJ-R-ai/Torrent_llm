@@ -58,6 +58,8 @@ export interface BackendDeps {
   exists(file: string): boolean;
   readToken(): string | null;
   spawn: typeof spawn;
+  /** SIGKILL the process group ``pid`` leads (POSIX). Injected so tests never send real signals. */
+  killGroup(pid: number): void;
   platform: NodeJS.Platform;
   resourcesPath: string;
   now(): number;
@@ -281,14 +283,17 @@ export class BackendManager extends EventEmitter {
   }
 
   private kill(child: ChildProcess): void {
-    if (child.pid == null) return;
+    const pid = child.pid;
+    // Never signal pid 0 or 1: kill(-1) reaches EVERY process of this user (it once took
+    // down a whole desktop session from a test with a fake child), kill(-0) our own group.
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1) return;
     if (this.deps.platform === "win32") {
       // The whole tree: torrent-peer may have started helpers.
-      this.deps.spawn("taskkill", ["/T", "/F", "/PID", String(child.pid)], { windowsHide: true });
+      this.deps.spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { windowsHide: true });
       return;
     }
     try {
-      process.kill(-child.pid, "SIGKILL"); // the process group made by detached: true
+      this.deps.killGroup(pid); // the process group made by detached: true
     } catch {
       try {
         child.kill("SIGKILL");
@@ -329,6 +334,10 @@ export function realDeps(resourcesPath: string): BackendDeps {
       }
     },
     spawn,
+    killGroup: (pid) => {
+      if (!Number.isInteger(pid) || pid <= 1) throw new Error(`refusing to signal process group ${pid}`);
+      process.kill(-pid, "SIGKILL");
+    },
     platform: process.platform,
     resourcesPath,
     now: () => Date.now(),
