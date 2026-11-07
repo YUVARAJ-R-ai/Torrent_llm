@@ -28,12 +28,16 @@ from dataclasses import dataclass, field
 
 import torch
 
+from torrent_llm.codec.profiles import CodecSet
 from torrent_llm.link import LinkProfile
+from torrent_llm.net.node import Node
 from torrent_llm.pool.config import PoolConfig
 from torrent_llm.pool.members import MemberTable
+from torrent_llm.pool.overlay import OverlaySender
 from torrent_llm.pool.router import NoReplica, Replica, pick_route
 from torrent_llm.runner import ChainRunner, HopError, NodeConfig, TopologyConfig
 from torrent_llm.sampling import GREEDY, Sampling
+from torrent_llm.transport import ShardClient
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +136,12 @@ class PoolRunner:
         max_busy_retries: int = 30,
         poll_s: float = 0.25,
         token: str | None = None,
+        node: Node | None = None,
+        codecs: CodecSet | None = None,
     ) -> None:
+        #: When set, hops travel over this overlay node instead of gRPC (``overlay.py``).
+        self.node = node
+        self.codecs = codecs or (config.codec_set() if node is not None else None)
         self.max_busy_retries = max_busy_retries
         self._token = token
         self.config = config
@@ -205,6 +214,27 @@ class PoolRunner:
             nodes=[NodeConfig(address=r.address, link=link_of(r)) for r in route],
         )
 
+    def _chain(self, route: list[Replica]) -> ChainRunner:
+        """A chain over ``route``: gRPC, or the overlay when this runner has a node."""
+        topology = self._topology(route)
+        if self.node is None:
+            return ChainRunner(topology, token=self._token)
+        node, codecs = self.node, self.codecs
+        assert codecs is not None
+        default = codecs.codec(self.config.policy()["fixed"])
+
+        def client(hop: int, cfg: NodeConfig) -> ShardClient:
+            replica = route[hop]
+            return ShardClient(
+                replica.address,
+                default,
+                link=cfg.link,
+                sender=OverlaySender(node, replica.member, replica.stage),
+                codecs=codecs,
+            )
+
+        return ChainRunner(topology, client_factory=client)
+
     def _charge(self, route: list[Replica], delta: int) -> None:
         with self._lock:
             for r in route:
@@ -255,7 +285,7 @@ class PoolRunner:
         avoid: set[str] = set()
         route = self._await_route(avoid, on_wait=lambda s: note("waiting", 0, stage=s))
         self._charge(route, +1)
-        runner = ChainRunner(self._topology(route), token=self._token)
+        runner = self._chain(route)
 
         request_id = uuid.uuid4().hex
         sent = ids
@@ -305,7 +335,7 @@ class PoolRunner:
                             avoid, on_wait=lambda s, at=step: note("waiting", at, stage=s)
                         )
                         self._charge(route, +1)
-                        runner = ChainRunner(self._topology(route), token=self._token)
+                        runner = self._chain(route)
                         request_id = uuid.uuid4().hex
                         sent = ids
                         cache_position = 0
@@ -331,7 +361,7 @@ class PoolRunner:
                         avoid, on_wait=lambda s, at=step: note("waiting", at, stage=s)
                     )
                     self._charge(route, +1)
-                    runner = ChainRunner(self._topology(route), token=self._token)
+                    runner = self._chain(route)
                     # The new copies have none of this request's cache: begin
                     # again from the text so far, as a prompt.
                     request_id = uuid.uuid4().hex
