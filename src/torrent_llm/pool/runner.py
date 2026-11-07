@@ -23,7 +23,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 
 import torch
@@ -259,6 +259,7 @@ class PoolRunner:
         max_new_tokens: int = 16,
         stop_token_ids: Collection[int] = (),
         sampling: Sampling = GREEDY,
+        on_token: Callable[[int], None] | None = None,
     ) -> PoolResult:
         """Decode, switching to other copies if a device is lost on the way.
 
@@ -406,6 +407,12 @@ class PoolRunner:
                 cache_position += int(sent.shape[1])
                 if int(token.item()) in stop_token_ids:
                     break
+                if on_token is not None:
+                    # Streaming to a person: a slow or failing reader must not end the answer.
+                    try:
+                        on_token(int(token.item()))
+                    except Exception:  # noqa: BLE001
+                        logger.exception("token callback failed")
                 ids = torch.cat([ids, token], dim=1)
                 sent = token
                 step += 1
