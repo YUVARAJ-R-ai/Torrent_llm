@@ -22,13 +22,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import statistics
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from torrent_llm.pool.net import available_ram_mb
+from torrent_llm.proc import popen_group, terminate_group
 
 REPO = Path(__file__).resolve().parents[1]
 PROMPT = (
@@ -88,13 +90,12 @@ def start_pool(pool_file: Path, args, ports: tuple[int, int]) -> list[subprocess
         else:
             cmd += ["--join", f"127.0.0.1:{ports[1]}"]
         procs.append(
-            subprocess.Popen(  # noqa: S603
+            popen_group(
                 cmd,
                 cwd=REPO,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
             )
         )
     return procs
@@ -102,15 +103,7 @@ def start_pool(pool_file: Path, args, ports: tuple[int, int]) -> list[subprocess
 
 def stop_pool(procs: list[subprocess.Popen]) -> None:
     for proc in procs:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    for proc in procs:
-        try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+        terminate_group(proc, timeout=15.0)
 
 
 def wait_ready(base: str, timeout: float = 150.0) -> None:
@@ -174,10 +167,7 @@ def main() -> int:
     parser.add_argument("--out", default="")
     args = parser.parse_args()
 
-    free = 0.0
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        if line.startswith("MemAvailable"):
-            free = int(line.split()[1]) / 1024**2
+    free = available_ram_mb() / 1024
     if free < 6:
         print(f"only {free:.1f} GB of RAM free; need about 6. Close something and retry.")
         return 2
