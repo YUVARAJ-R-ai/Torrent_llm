@@ -292,6 +292,19 @@ def test_map_port_happy_path() -> None:
             assert "<NewPortMappingDescription>Torrent-LLM</NewPortMappingDescription>" in body
             assert "<NewLeaseDuration>3600</NewLeaseDuration>" in body
             assert "<NewRemoteHost></NewRemoteHost>" in body
+            # Some routers reject the arguments out of the order the standard gives.
+            order = [
+                "NewRemoteHost",
+                "NewExternalPort",
+                "NewProtocol",
+                "NewInternalPort",
+                "NewInternalClient",
+                "NewEnabled",
+                "NewPortMappingDescription",
+                "NewLeaseDuration",
+            ]
+            positions = [body.index(f"<{name}>") for name in order]
+            assert positions == sorted(positions)
 
             ip_posts = [
                 p
