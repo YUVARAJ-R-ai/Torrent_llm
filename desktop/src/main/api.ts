@@ -105,7 +105,12 @@ export async function apiGenerate(
       buffer = buffer.slice(cut).replace(/^\r?\n\r?\n/, "");
       const parsed = parseSseBlock(block);
       if (!parsed) continue;
-      const payload = JSON.parse(parsed.data) as Record<string, unknown>;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(parsed.data) as Record<string, unknown>;
+      } catch (e) {
+        throw new ApiError(`malformed SSE event payload: ${e instanceof Error ? e.message : String(e)}`);
+      }
       if (parsed.event === "token") onToken(String(payload.text ?? ""), Number(payload.index ?? 0));
       else if (parsed.event === "done") return payload as unknown as GenerateResult;
       else if (parsed.event === "error") throw new ApiError(String(payload.detail ?? "the answer failed"));

@@ -12,6 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import type { AppSettings, BackendStatus, StartOptions } from "../shared/types";
 import { adminTokenPath, installedAppDir, installedExecutable } from "./paths";
@@ -20,6 +21,19 @@ const LOG_LINES = 2000;
 const START_TIMEOUT_MS = 15 * 60 * 1000; // first start downloads and loads the model
 const STOP_GRACE_MS = 10_000;
 const INVITE = /tllm:\/\/join\/[A-Za-z0-9_-]+/g;
+/** Longest invite link (net/invite.py MAX_LINK_CHARS). */
+const MAX_LINK_CHARS = 4096;
+/** Characters held while waiting for a newline before they are logged anyway. */
+const MAX_PENDING_CHARS = 64 * 1024;
+
+/** A cut point at or before ``at`` that is not inside an invite link. */
+export function safeCut(text: string, at: number): number {
+  const start = text.lastIndexOf("tllm://join/", at);
+  if (start < 0) return at;
+  let end = start + "tllm://join/".length;
+  while (end < text.length && /[A-Za-z0-9_-]/.test(text[end])) end += 1;
+  return end > at ? start : at;
+}
 
 /** Hide invite links (secrets) in anything shown or stored. */
 export function redact(line: string): string {
@@ -78,6 +92,10 @@ export class BackendManager extends EventEmitter {
   private child: ChildProcess | null = null;
   private logs: string[] = [];
   private stopping = false;
+  private streams = {
+    stdout: { decoder: new StringDecoder("utf8"), pending: "" },
+    stderr: { decoder: new StringDecoder("utf8"), pending: "" },
+  };
 
   constructor(
     private readonly deps: BackendDeps,
@@ -129,6 +147,7 @@ export class BackendManager extends EventEmitter {
     const settings = this.getSettings();
     const args = buildArgs(options, settings, this.poolFile());
     this.logs = [];
+    this.resetStreams();
     this.log(`$ torrent-peer ${redact(args.join(" "))}`);
     const child = this.deps.spawn(executable, args, {
       env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
@@ -147,13 +166,15 @@ export class BackendManager extends EventEmitter {
       mode: options.mode,
       startedAt: this.deps.now(),
     });
-    child.stdout?.on("data", (chunk: Buffer) => this.lines(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => this.lines(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => this.feedStream("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => this.feedStream("stderr", chunk));
     child.on("error", (error) => {
+      this.flushStreams();
       this.child = null;
       this.set({ phase: "error", message: `Could not start torrent-peer: ${error.message}`, pid: null });
     });
     child.on("exit", (code, signal) => {
+      this.flushStreams();
       this.child = null;
       if (this.stopping) {
         this.set({ phase: "stopped", message: "Stopped.", pid: null, url: "" });
@@ -198,13 +219,18 @@ export class BackendManager extends EventEmitter {
         ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(dir, "install.ps1")]]
         : ["sh", [path.join(dir, "install.sh")]];
     this.logs = [];
+    this.resetStreams();
     this.set({ phase: "installing", message: "Installing Torrent-LLM (this downloads about 3 GB)..." });
     const child = this.deps.spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (chunk: Buffer) => this.lines(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => this.lines(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => this.feedStream("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => this.feedStream("stderr", chunk));
     const code = await new Promise<number | null>((resolve) => {
-      child.on("exit", (c) => resolve(c));
+      child.on("exit", (c) => {
+        this.flushStreams();
+        resolve(c);
+      });
       child.on("error", (e) => {
+        this.flushStreams();
         this.log(`installer failed to start: ${e.message}`);
         resolve(-1);
       });
@@ -242,10 +268,42 @@ export class BackendManager extends EventEmitter {
     this.emit("status", this.current());
   }
 
-  private lines(chunk: Buffer): void {
-    for (const line of chunk.toString("utf8").split(/\r?\n/)) {
-      if (line.trim()) this.log(line);
+  private feedStream(stream: "stdout" | "stderr", chunk: Buffer | string): void {
+    const state = this.streams[stream];
+    // StringDecoder keeps a multi-byte character that is split across two chunks whole.
+    state.pending += typeof chunk === "string" ? chunk : state.decoder.write(chunk);
+    const parts = state.pending.split("\n");
+    state.pending = parts.pop() ?? "";
+    for (const part of parts) this.logLine(part);
+    if (state.pending.length > MAX_PENDING_CHARS) {
+      // A child printing without newlines must not grow memory forever. Cut where no
+      // invite link can be split, so the hidden part of a link is never left behind.
+      const cut = safeCut(state.pending, state.pending.length - MAX_LINK_CHARS);
+      this.logLine(state.pending.slice(0, cut));
+      state.pending = state.pending.slice(cut);
     }
+  }
+
+  private flushStreams(): void {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const state = this.streams[stream];
+      const rest = state.pending + state.decoder.end();
+      state.pending = "";
+      state.decoder = new StringDecoder("utf8");
+      if (rest) this.logLine(rest);
+    }
+  }
+
+  /** Forget a previous process's half-lines before a new one starts. */
+  private resetStreams(): void {
+    for (const stream of ["stdout", "stderr"] as const) {
+      this.streams[stream] = { decoder: new StringDecoder("utf8"), pending: "" };
+    }
+  }
+
+  private logLine(raw: string): void {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line.trim()) this.log(line);
   }
 
   private log(line: string): void {
