@@ -118,10 +118,14 @@ class ShardClient:
         token: str | None = None,
         sender: Sender | None = None,
         codecs: CodecSet | None = None,
+        choose: Callable[[torch.Tensor], Codec] | None = None,
     ) -> None:
         self.address = address
         self.codec = codec
         self.codecs = codecs
+        #: Picks this hop's codec from what is about to be sent (the pool's adaptive
+        #: policy); ``None`` always uses ``codec``.
+        self.choose = choose
         self.timeout = timeout
         #: Optional simulated link (see ``torrent_llm.link``). ``None`` means the
         #: real network decides the timing, which on loopback is almost nothing.
@@ -193,7 +197,8 @@ class ShardClient:
             codec: Encode this hop with ``codec`` instead of the client's own (the
                 pool picks one per hop from the link it measured).
         """
-        codec = codec or self.codec
+        if codec is None:
+            codec = self.choose(tensor) if self.choose is not None else self.codec
         request_id = request_id or uuid.uuid4().hex
         if _can_forward_untouched(message, codec, request_id, hop, is_token_ids):
             # The previous hop's reply is already in this codec's format, addressed to

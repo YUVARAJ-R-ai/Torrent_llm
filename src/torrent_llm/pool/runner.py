@@ -28,9 +28,11 @@ from dataclasses import dataclass, field
 
 import torch
 
+from torrent_llm.codec import Codec
 from torrent_llm.codec.profiles import CodecSet
 from torrent_llm.link import LinkProfile
 from torrent_llm.net.node import Node
+from torrent_llm.pool.codec_policy import CodecChooser, LinkEstimator
 from torrent_llm.pool.config import PoolConfig
 from torrent_llm.pool.members import MemberTable
 from torrent_llm.pool.overlay import OverlaySender
@@ -68,6 +70,8 @@ class HopInfo:
     compute_ms: float
     transport_ms: float
     wall_ms: float
+    #: Codec (profile id over the overlay) this hop was sent with.
+    codec: str = ""
 
 
 @dataclass
@@ -142,6 +146,13 @@ class PoolRunner:
         #: When set, hops travel over this overlay node instead of gRPC (``overlay.py``).
         self.node = node
         self.codecs = codecs or (config.codec_set() if node is not None else None)
+        #: Link speed per peer, measured from real hops, and the codec choice made from it.
+        self.links = LinkEstimator()
+        self.chooser = (
+            CodecChooser(config.policy(), self.codecs, self.links)
+            if self.codecs is not None
+            else None
+        )
         self.max_busy_retries = max_busy_retries
         self._token = token
         self.config = config
@@ -219,21 +230,32 @@ class PoolRunner:
         topology = self._topology(route)
         if self.node is None:
             return ChainRunner(topology, token=self._token)
-        node, codecs = self.node, self.codecs
-        assert codecs is not None
+        node, codecs, chooser = self.node, self.codecs, self.chooser
+        if codecs is None or chooser is None:
+            raise RuntimeError("an overlay runner needs codec profiles")
         default = codecs.codec(self.config.policy()["fixed"])
 
         def client(hop: int, cfg: NodeConfig) -> ShardClient:
             replica = route[hop]
+
+            def choose(tensor: torch.Tensor) -> Codec:
+                seq_len = int(tensor.shape[-2]) if tensor.dim() >= 2 else 1
+                raw = tensor.numel() * tensor.element_size()
+                return codecs.codec(chooser.choose(replica.member, raw, seq_len))
+
             return ShardClient(
                 replica.address,
                 default,
                 link=cfg.link,
                 sender=OverlaySender(node, replica.member, replica.stage),
                 codecs=codecs,
+                choose=choose,
             )
 
         return ChainRunner(topology, client_factory=client)
+
+    def _connected(self, hop: HopInfo) -> bool:
+        return self.node is not None and self.node.connection(hop.member) is not None
 
     def _charge(self, route: list[Replica], delta: int) -> None:
         with self._lock:
@@ -241,6 +263,12 @@ class PoolRunner:
                 self._load[r.address] = max(0, self._load.get(r.address, 0) + delta)
 
     def _observe(self, hops: list[HopInfo]) -> None:
+        for hop in hops:
+            if hop.member != self.me:
+                rtt = self.node.connection(hop.member).rtt_ms if self._connected(hop) else None
+                self.links.observe(hop.member, hop.sent_bytes, hop.transport_ms, rtt)
+            if self.chooser is not None and hop.codec in (self.codecs or ()):
+                self.chooser.learn(hop.codec, hop.sent_bytes, hop.uncompressed_bytes)
         with self._lock:
             for hop in hops:
                 old = self.rtt_ms.get(hop.address)
@@ -383,6 +411,7 @@ class PoolRunner:
                         compute_ms=h.compute_ns / 1e6,
                         transport_ms=h.transport_ns / 1e6,
                         wall_ms=h.wall_ns / 1e6,
+                        codec=h.codec,
                     )
                     for i, h in enumerate(chain.hops)
                 ]
