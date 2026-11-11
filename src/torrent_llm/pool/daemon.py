@@ -54,6 +54,7 @@ from torrent_llm.pool.overlay import serve_shards
 from torrent_llm.pool.owner import OwnerMonitor
 from torrent_llm.pool.placement import wanted_stages
 from torrent_llm.pool.runner import PoolRunner
+from torrent_llm.pool.trust import TrustStore
 from torrent_llm.shard import resolve_device
 
 logger = logging.getLogger(__name__)
@@ -103,8 +104,11 @@ class PeerDaemon:
         shard_port_base: int = 0,
         clock: Callable[[], float] = time.monotonic,
         node: Node | None = None,
+        trust: TrustStore | None = None,
+        verify_rate: float = 0.0,
     ) -> None:
         self.config = config
+        self.trust = trust
         self.profile = profile
         #: The overlay this device lives on. With it, the device's name is its peer id,
         #: its entry is signed, gossip and shard calls travel encrypted over the node,
@@ -150,7 +154,15 @@ class PeerDaemon:
         self._asked = 0
         self._asked_tokens = 0
         self._reported_mismatches: set[str] = set()
-        self.runner = PoolRunner(config, self.table, me=self._name, token=token, node=node)
+        self.runner = PoolRunner(
+            config,
+            self.table,
+            me=self._name,
+            token=token,
+            node=node,
+            trust=trust,
+            verify_rate=verify_rate,
+        )
 
         self._incarnation = time.time_ns()
         self._heartbeat = 0
