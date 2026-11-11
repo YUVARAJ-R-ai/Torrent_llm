@@ -127,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--relay", action="store_true", help="always offer to relay for unreachable devices"
     )
     parser.add_argument(
+        "--privacy",
+        action="store_true",
+        help=(
+            "keep the first and last stage of the model on this device, so other devices "
+            "never see your prompt's or answer's tokens (needs memory for two stages)"
+        ),
+    )
+    parser.add_argument(
         "--ui-lan",
         action="store_true",
         help="also serve the read-only dashboard to this network (default: this machine only)",

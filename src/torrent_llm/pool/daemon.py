@@ -106,6 +106,7 @@ class PeerDaemon:
         node: Node | None = None,
         trust: TrustStore | None = None,
         verify_rate: float = 0.0,
+        privacy: bool = False,
     ) -> None:
         self.config = config
         self.trust = trust
@@ -162,6 +163,7 @@ class PeerDaemon:
             node=node,
             trust=trust,
             verify_rate=verify_rate,
+            privacy=privacy,
         )
 
         self._incarnation = time.time_ns()
@@ -453,6 +455,11 @@ class PeerDaemon:
 
         alive = self.table.alive()
         wanted = set(wanted_stages(self.config, alive).get(self.name, []))
+        ends = {0, self.config.stages - 1}
+        room = self.profile.slots(self.config.shard_mb)
+        if self.runner.privacy and room >= len(ends):
+            # The ends stay here first; whatever room is left serves the pool as usual.
+            wanted = ends | set(sorted(wanted - ends)[: room - len(ends)])
         held = self.shards.stages()
 
         if state == ACTIVE:

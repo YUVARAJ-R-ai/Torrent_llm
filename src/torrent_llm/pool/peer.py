@@ -254,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def start_pool_device(
-    settings: PeerSettings, *, node, device=None, ui_lan: bool = False
+    settings: PeerSettings, *, node, device=None, ui_lan: bool = False, privacy: bool = False
 ) -> RunningPeer:
     """Run the pool device on an overlay ``node`` (the swarm modes).
 
@@ -332,6 +332,7 @@ def start_pool_device(
         node=node,
         trust=trust,
         verify_rate=verify_rate,
+        privacy=privacy,
         extend_app=extend,
     )
     print(f"  Control panel: http://{host}:{peer.port}", flush=True)

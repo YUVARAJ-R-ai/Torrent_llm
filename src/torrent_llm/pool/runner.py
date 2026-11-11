@@ -146,7 +146,11 @@ class PoolRunner:
         codecs: CodecSet | None = None,
         trust: TrustStore | None = None,
         verify_rate: float = 0.0,
+        privacy: bool = False,
     ) -> None:
+        #: Keep the first and last stage on this device, so no other device sees the
+        #: prompt's tokens or the answer's (they see only hidden states in between).
+        self.privacy = privacy
         #: Reputation and bans; banned devices are never routed through.
         self.trust = trust
         #: When set, hops travel over this overlay node instead of gRPC (``overlay.py``).
@@ -191,14 +195,22 @@ class PoolRunner:
             members = [m for m in members if not self.trust.is_banned(m.name)]
         with self._lock:
             load, rtt = dict(self._load), dict(self.rtt_ms)
+        pin = self._privacy_pins()
         try:
-            return pick_route(self.config, members, exclude=avoid, local_load=load, rtt_ms=rtt)
+            return pick_route(
+                self.config, members, exclude=avoid, local_load=load, rtt_ms=rtt, pin=pin
+            )
         except NoReplica:
             if not avoid:
                 raise
         # Everything left is something this request already found unhappy. A
         # second chance beats giving up while a stage has a copy at all.
-        return pick_route(self.config, members, local_load=load, rtt_ms=rtt)
+        return pick_route(self.config, members, local_load=load, rtt_ms=rtt, pin=pin)
+
+    def _privacy_pins(self) -> dict[int, str] | None:
+        if not self.privacy or self.me is None:
+            return None
+        return {0: self.me, self.config.stages - 1: self.me}
 
     def _await_route(self, avoid: Collection[str], *, on_wait) -> list[Replica]:
         """Route, waiting up to ``patience`` for a missing stage to come back."""
@@ -222,6 +234,12 @@ class PoolRunner:
         copy" would send the person looking at the wrong problem: the fault is that this
         device is not connected to the pool at all.
         """
+        if self.privacy and exc.stage in (0, self.config.stages - 1):
+            return (
+                f"privacy mode keeps stage {exc.stage + 1} on this device, and this device is "
+                "not holding it (yet). It needs memory for the first and the last stage; "
+                "lend more memory or turn privacy mode off."
+            )
         others = [m for m in self.table.members() if m.name != self.table.me]
         if not others:
             return (

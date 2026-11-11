@@ -228,7 +228,9 @@ def main(args, settings) -> int:
         from torrent_llm.pool.peer import start_pool_device  # avoid an import cycle
 
         try:
-            device.peer = start_pool_device(settings, node=node, device=device, ui_lan=args.ui_lan)
+            device.peer = start_pool_device(
+                settings, node=node, device=device, ui_lan=args.ui_lan, privacy=args.privacy
+            )
         except (OSError, RuntimeError) as exc:
             print(f"\nCould not start the device: {exc}\n", file=sys.stderr)
             device.close()

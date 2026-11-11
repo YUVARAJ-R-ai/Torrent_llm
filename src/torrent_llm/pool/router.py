@@ -101,8 +101,13 @@ def pick_route(
     local_load: Mapping[str, int] | None = None,
     rtt_ms: Mapping[str, float] | None = None,
     rng: random.Random | None = None,
+    pin: Mapping[int, str] | None = None,
 ) -> list[Replica]:
     """One copy of every stage, in pipeline order.
+
+    ``pin`` forces a stage onto one device (privacy mode pins the first and last
+    stage to the asking device); a pinned stage that device does not have ready
+    raises :class:`NoReplica` for it.
 
     Raises:
         NoReplica: some stage has no usable copy, naming the first one.
@@ -111,6 +116,8 @@ def pick_route(
     route = []
     for stage in range(config.stages):
         options = replicas_of(stage, members, exclude=exclude, local_load=local_load)
+        if pin and stage in pin:
+            options = [r for r in options if r.member == pin[stage]]
         if not options:
             raise NoReplica(stage)
         best = min(score(r, rtt_ms) for r in options)
