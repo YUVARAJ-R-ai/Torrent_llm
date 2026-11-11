@@ -56,7 +56,9 @@ async def _pair(
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         init = asyncio.ensure_future(
-            initiate(TcpStream(reader, writer), a, psk=psk_a, expect_peer=expect, min_pow_bits=pow_a)
+            initiate(
+                TcpStream(reader, writer), a, psk=psk_a, expect_peer=expect, min_pow_bits=pow_a
+            )
         )
         results = await asyncio.gather(init, accepted, return_exceptions=True)
     finally:
@@ -171,7 +173,9 @@ def test_matching_swarm_secret_connects_and_a_wrong_one_fails_on_both_sides():
         await ca.close()
         await cb.close()
         with pytest.raises(HandshakeError, match="different swarm"):
-            await _pair(Identity.generate(), Identity.generate(), psk_a=os.urandom(32), psk_b=secret)
+            await _pair(
+                Identity.generate(), Identity.generate(), psk_a=os.urandom(32), psk_b=secret
+            )
         with pytest.raises(HandshakeError):
             await _pair(Identity.generate(), Identity.generate(), psk_a=None, psk_b=secret)
 
