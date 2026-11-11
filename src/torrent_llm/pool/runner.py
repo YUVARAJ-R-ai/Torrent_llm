@@ -37,6 +37,8 @@ from torrent_llm.pool.config import PoolConfig
 from torrent_llm.pool.members import MemberTable
 from torrent_llm.pool.overlay import OverlaySender
 from torrent_llm.pool.router import NoReplica, Replica, pick_route
+from torrent_llm.pool.spotcheck import SpotChecker
+from torrent_llm.pool.trust import TrustStore, Verifier
 from torrent_llm.runner import ChainRunner, HopError, NodeConfig, TopologyConfig
 from torrent_llm.sampling import GREEDY, Sampling
 from torrent_llm.transport import ShardClient
@@ -142,7 +144,11 @@ class PoolRunner:
         token: str | None = None,
         node: Node | None = None,
         codecs: CodecSet | None = None,
+        trust: TrustStore | None = None,
+        verify_rate: float = 0.0,
     ) -> None:
+        #: Reputation and bans; banned devices are never routed through.
+        self.trust = trust
         #: When set, hops travel over this overlay node instead of gRPC (``overlay.py``).
         self.node = node
         self.codecs = codecs or (config.codec_set() if node is not None else None)
@@ -151,6 +157,17 @@ class PoolRunner:
         self.chooser = (
             CodecChooser(config.policy(), self.codecs, self.links)
             if self.codecs is not None
+            else None
+        )
+        self.spot = (
+            SpotChecker(
+                trust,
+                Verifier(verify_rate),
+                me=me,
+                members=self.table.alive,
+                chain=self._chain,
+            )
+            if trust is not None and verify_rate > 0
             else None
         )
         self.max_busy_retries = max_busy_retries
@@ -170,6 +187,8 @@ class PoolRunner:
     def route(self, *, avoid: Collection[str] = ()) -> list[Replica]:
         """One copy of every stage, or :class:`NoReplica` if one is missing."""
         members = self.table.alive()
+        if self.trust is not None:
+            members = [m for m in members if not self.trust.is_banned(m.name)]
         with self._lock:
             load, rtt = dict(self._load), dict(self.rtt_ms)
         try:
@@ -311,6 +330,7 @@ class PoolRunner:
             )
 
         ids = input_ids
+        check_at = self.spot.plan(max_new_tokens) if self.spot is not None else None
         avoid: set[str] = set()
         route = self._await_route(avoid, on_wait=lambda s: note("waiting", 0, stage=s))
         self._charge(route, +1)
@@ -432,6 +452,9 @@ class PoolRunner:
                 if recovery:
                     note("recovered", step, detail=" -> ".join(r.member for r in route))
                     recovery = False
+                if self.spot is not None and check_at == len(result.passes) - 1:
+                    # The same text, on the same route but one stage, in the background.
+                    self.spot.submit(route, ids, int(token.item()), sampling.for_step(step))
 
                 cache_position += int(sent.shape[1])
                 if int(token.item()) in stop_token_ids:
