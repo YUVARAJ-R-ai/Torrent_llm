@@ -23,6 +23,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -35,6 +36,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from torrent_llm.pool.config import DeviceProfile, LabConfig
+from torrent_llm.proc import kill_group, popen_group, terminate_group
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +146,11 @@ class Lab:
                 "PYTHONUNBUFFERED": "1",
                 "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
             }
-            device.process = subprocess.Popen(  # noqa: S603
+            device.process = popen_group(
                 self._command(device, self._seeds(name)),
                 stdout=log.open("ab"),
                 stderr=subprocess.STDOUT,
                 env=env,
-                start_new_session=True,
             )
             device.log_path = log
             device.started_at = time.time()
@@ -160,12 +161,8 @@ class Lab:
         """Switch off cleanly: the device says goodbye and the pool hears it."""
         with self._lock:
             device = self._get(name)
-            if device.running:
-                os.killpg(device.process.pid, signal.SIGTERM)
-                try:
-                    device.process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    os.killpg(device.process.pid, signal.SIGKILL)
+            if device.running and device.process is not None:
+                terminate_group(device.process, timeout=timeout)
             device.last_event = "switched off"
             return device
 
@@ -173,9 +170,8 @@ class Lab:
         """Kill it dead, with no goodbye: what a crash or a pulled plug looks like."""
         with self._lock:
             device = self._get(name)
-            if device.running:
-                os.killpg(device.process.pid, signal.SIGKILL)
-                device.process.wait(timeout=5)
+            if device.running and device.process is not None:
+                kill_group(device.process)
             device.last_event = "crashed"
             return device
 
@@ -285,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", type=int, default=None, help="how many devices to switch on")
     parser.add_argument("--port", type=int, default=8100, help="port of the lab's own API")
     parser.add_argument("--cors-origin", action="append", default=[])
-    parser.add_argument("--log-dir", default="/tmp/torrent-pool")
+    parser.add_argument("--log-dir", default=str(Path(tempfile.gettempdir()) / "torrent-pool"))
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

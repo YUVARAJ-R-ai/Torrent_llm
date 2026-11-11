@@ -45,6 +45,7 @@ from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT
 from torrent_llm.codec.calibrate import CovarianceAccumulator, Projection
 from torrent_llm.codec.lowrank import LowRankCodec
 from torrent_llm.eval.boundary import WireTap, boundary_hook, capture_boundary
+from torrent_llm.pool.net import available_ram_mb
 
 CACHE = Path.home() / ".cache" / "torrent-llm" / "corpus"
 FIT_BOOKS = {11: "Alice in Wonderland", 1342: "Pride and Prejudice", 1661: "Sherlock Holmes"}
@@ -228,10 +229,7 @@ EVAL_QUESTIONS = (
 
 
 def free_ram_gb() -> float:
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        if line.startswith("MemAvailable"):
-            return int(line.split()[1]) / 1024**2
-    return 0.0
+    return available_ram_mb() / 1024
 
 
 def fetch_book(book_id: int) -> str:
