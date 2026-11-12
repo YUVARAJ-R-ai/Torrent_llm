@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from torrent_llm.net import upnp
-from torrent_llm.net.autonat import PUBLIC, AutoNat
+from torrent_llm.net.autonat import PRIVATE, PUBLIC, AutoNat
 from torrent_llm.net.dht import Dht, topic_key
 from torrent_llm.net.identity import PUBLIC_POW_BITS
 from torrent_llm.net.invite import Invite
@@ -168,7 +168,11 @@ class SwarmServices:
         relay_always: bool = False,
         lan_discovery: bool = True,
         discovery_port: int = DISCOVERY_PORT,
+        inbound: bool = True,
     ) -> None:
+        #: ``False``: never publish a direct address, even one a check would confirm;
+        #: be reached through relays only (``--no-inbound``).
+        self.inbound = inbound
         self.node = node
         self.lan_discovery = lan_discovery
         self.discovery_port = discovery_port
@@ -305,11 +309,14 @@ class SwarmServices:
     def _round(self) -> None:
         peers = self.node.connected_peers()
         if peers:
-            extra = (self.reachability.mapped,) if self.reachability.mapped else ()
-            self.autonat.check(peers[:3], extra)
-            self.reachability.status = self.autonat.status
+            if self.inbound:
+                extra = (self.reachability.mapped,) if self.reachability.mapped else ()
+                self.autonat.check(peers[:3], extra)
+                self.reachability.status = self.autonat.status
+            else:
+                self.reachability.status = PRIVATE
             self.reachability.checked_at = time.time()
-            if self.autonat.status == PUBLIC:
+            if self.reachability.status == PUBLIC:
                 if not self.relay.serving:
                     self.relay.set_serving(True)
                     logger.info("this device is reachable and now relays for others")

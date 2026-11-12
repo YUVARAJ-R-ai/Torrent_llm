@@ -230,6 +230,7 @@ def main(args, settings) -> int:
         node,
         spec,
         use_upnp=not (args.no_upnp or getattr(args, "no_inbound", False)),
+        inbound=not getattr(args, "no_inbound", False),
         relay_always=args.relay or args.mode == "bootstrap",
     )
     services.start()
