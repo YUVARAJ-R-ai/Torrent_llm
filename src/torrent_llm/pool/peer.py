@@ -266,14 +266,18 @@ def start_pool_device(
     from torrent_llm.chat import stop_token_ids
     from torrent_llm.net import paths
     from torrent_llm.pool.api_swarm import add_swarm_routes
+    from torrent_llm.pool.model_share import ensure_model
     from torrent_llm.pool.net import lan_address
     from torrent_llm.pool.swarm_cli import admin_token
     from torrent_llm.pool.trust import TrustStore
 
     config, profile = settings.config, settings.profile
+    public = device is not None and device.spec.public
+    # The model from this disk, or fetched from devices in the swarm that have it.
+    source = ensure_model(node, config.model_id, public=public, pinned=config.model_manifest)
     try:
         tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id, trust_remote_code=config.trust_remote_code
+            source, trust_remote_code=config.trust_remote_code
         )
     except OSError as exc:
         raise RuntimeError(
@@ -284,7 +288,7 @@ def start_pool_device(
 
     def loader(spec: ShardSpec):
         return load_shard(
-            config.model_id,
+            source,
             spec,
             device=profile.device,
             dtype=getattr(torch, config.dtype),
@@ -295,12 +299,11 @@ def start_pool_device(
     token = admin_token()
     trust = TrustStore(paths.trust_path())
     node.add_gatekeeper(trust.gatekeeper)  # banned devices cannot even connect
-    public = device is not None and device.spec.public
     # Strangers get checked; friends who share an invite are trusted unless the pool says otherwise.
     verify_rate = config.verify_rate
     if verify_rate is None:
         verify_rate = 0.05 if public else 0.0
-    stop_ids = stop_token_ids(config.model_id, tokenizer)
+    stop_ids = stop_token_ids(source, tokenizer)
 
     def extend(app: FastAPI, daemon: PeerDaemon) -> None:
         if device is not None:

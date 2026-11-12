@@ -81,6 +81,8 @@ class SwarmDevice:
     services: SwarmServices
     spec: SwarmSpec
     peer: object | None = None  # RunningPeer, when the device runs the model
+    #: Offers this device's model files to the swarm (``model_share.py``).
+    models: object | None = None
 
     def invite(self, config: PoolConfig) -> Invite | None:
         """A fresh invite for this swarm with this device's current addresses."""
@@ -98,6 +100,8 @@ class SwarmDevice:
     def close(self) -> None:
         if self.peer is not None:
             self.peer.close(graceful=True)  # type: ignore[attr-defined]
+        if self.models is not None:
+            self.models.close()  # type: ignore[attr-defined]
         self.services.stop()
         self.node.close()
 
@@ -222,7 +226,9 @@ def main(args, settings) -> int:
         node, spec, use_upnp=not args.no_upnp, relay_always=args.relay or args.mode == "bootstrap"
     )
     services.start()
-    device = SwarmDevice(node=node, services=services, spec=spec)
+    from torrent_llm.pool.model_share import serve_models
+
+    device = SwarmDevice(node=node, services=services, spec=spec, models=serve_models(node))
 
     if args.mode != "bootstrap":
         from torrent_llm.pool.peer import start_pool_device  # avoid an import cycle
