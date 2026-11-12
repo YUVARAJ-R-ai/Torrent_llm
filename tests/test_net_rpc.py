@@ -304,7 +304,7 @@ def test_max_inflight_busy():
     run(_test())
 
 
-# 7. SILENT PEER: remote stops reading -> fails pending call well before its timeout, on_close called once
+# 7. SILENT PEER: remote stops reading -> pending call fails before its timeout; on_close once
 def test_silent_peer_fails_pending_with_unavailable():
     async def _test():
         on_close_calls = []
@@ -330,7 +330,7 @@ def test_silent_peer_fails_pending_with_unavailable():
             elapsed = time.monotonic() - t0
 
             assert exc.value.code == "unavailable"
-            assert elapsed < 3.0  # liveness (~0.8s) fired, not the 10s call timeout; slack for loaded CI
+            assert elapsed < 3.0  # liveness (~0.8s) fired, not the 10s timeout; slack for CI
             await conn_a.close()
             assert conn_a.closed
             assert len(on_close_calls) == 1

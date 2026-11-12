@@ -73,46 +73,64 @@ def test_override_wins_on_every_platform(tmp_path: Path) -> None:
 
 def test_empty_string_env_values_are_ignored(tmp_path: Path) -> None:
     # Empty TORRENT_LLM_HOME falls through to platform default
-    assert data_dir(
-        platform="win32",
-        env={ENV_OVERRIDE: ""},
-        home=tmp_path,
-    ) == tmp_path / "AppData" / "Local" / "TorrentLLM"
+    assert (
+        data_dir(
+            platform="win32",
+            env={ENV_OVERRIDE: ""},
+            home=tmp_path,
+        )
+        == tmp_path / "AppData" / "Local" / "TorrentLLM"
+    )
 
-    assert data_dir(
-        platform="darwin",
-        env={ENV_OVERRIDE: ""},
-        home=tmp_path,
-    ) == tmp_path / "Library" / "Application Support" / "TorrentLLM"
+    assert (
+        data_dir(
+            platform="darwin",
+            env={ENV_OVERRIDE: ""},
+            home=tmp_path,
+        )
+        == tmp_path / "Library" / "Application Support" / "TorrentLLM"
+    )
 
-    assert data_dir(
-        platform="linux",
-        env={ENV_OVERRIDE: ""},
-        home=tmp_path,
-    ) == tmp_path / ".local" / "share" / "torrent-llm"
+    assert (
+        data_dir(
+            platform="linux",
+            env={ENV_OVERRIDE: ""},
+            home=tmp_path,
+        )
+        == tmp_path / ".local" / "share" / "torrent-llm"
+    )
 
     # Empty LOCALAPPDATA falls back to home AppData
-    assert data_dir(
-        platform="win32",
-        env={"LOCALAPPDATA": ""},
-        home=tmp_path,
-    ) == tmp_path / "AppData" / "Local" / "TorrentLLM"
+    assert (
+        data_dir(
+            platform="win32",
+            env={"LOCALAPPDATA": ""},
+            home=tmp_path,
+        )
+        == tmp_path / "AppData" / "Local" / "TorrentLLM"
+    )
 
     # Empty XDG_DATA_HOME falls back to home .local/share
-    assert data_dir(
-        platform="linux",
-        env={"XDG_DATA_HOME": ""},
-        home=tmp_path,
-    ) == tmp_path / ".local" / "share" / "torrent-llm"
+    assert (
+        data_dir(
+            platform="linux",
+            env={"XDG_DATA_HOME": ""},
+            home=tmp_path,
+        )
+        == tmp_path / ".local" / "share" / "torrent-llm"
+    )
 
 
 def test_relative_xdg_data_home_ignored(tmp_path: Path) -> None:
     for rel_path in ("relative/path", ".local/share", "./custom", "share"):
-        assert data_dir(
-            platform="linux",
-            env={"XDG_DATA_HOME": rel_path},
-            home=tmp_path,
-        ) == tmp_path / ".local" / "share" / "torrent-llm"
+        assert (
+            data_dir(
+                platform="linux",
+                env={"XDG_DATA_HOME": rel_path},
+                home=tmp_path,
+            )
+            == tmp_path / ".local" / "share" / "torrent-llm"
+        )
 
 
 def test_ensure_data_dir_creates_directory(tmp_path: Path) -> None:

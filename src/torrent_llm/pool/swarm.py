@@ -236,9 +236,7 @@ class SwarmServices:
 
     def _start_lan(self) -> None:
         try:
-            self.discovery = Discovery(
-                self._announcement(), self._heard, port=self.discovery_port
-            )
+            self.discovery = Discovery(self._announcement(), self._heard, port=self.discovery_port)
             self.discovery.start()
         except OSError as exc:
             logger.info("LAN discovery unavailable here: %s", exc)

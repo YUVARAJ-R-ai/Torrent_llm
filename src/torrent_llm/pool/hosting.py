@@ -346,7 +346,6 @@ class ShardHost:
             held.status = READY
         logger.info("stage %d ready on port %d (%s)", held.stage, port, runtime.device)
 
-
     def _load_overlay(self, held: _Held) -> None:
         try:
             runtime = self._loader(held.spec)

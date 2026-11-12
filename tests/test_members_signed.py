@@ -12,8 +12,14 @@ from torrent_llm.pool.members import HostedStage, Member, MemberTable
 
 def _row(identity: Identity, heartbeat: int = 1, **kw) -> Member:
     return Member(
-        name=identity.peer_id, host="", control_port=0, label="alice", heartbeat=heartbeat,
-        hosting=(HostedStage(stage=0, status="ready"),), addrs=("tcp://10.0.0.2:9100",), **kw,
+        name=identity.peer_id,
+        host="",
+        control_port=0,
+        label="alice",
+        heartbeat=heartbeat,
+        hosting=(HostedStage(stage=0, status="ready"),),
+        addrs=("tcp://10.0.0.2:9100",),
+        **kw,
     ).signed_by(identity)
 
 
@@ -60,9 +66,13 @@ def test_digest_gossip_sends_only_what_the_other_side_lacks():
 
 
 def test_untrusted_entries_are_refused_with_value_error():
-    for raw in (None, [], {"name": "x", "host": "", "control_port": 0, "evil": 1},
-                {"name": "x", "host": "", "control_port": 0, "hosting": [{"stage": "a", "x": 1}]},
-                {"name": "x", "host": "", "control_port": 0, "addrs": ["a"] * 17}):
+    for raw in (
+        None,
+        [],
+        {"name": "x", "host": "", "control_port": 0, "evil": 1},
+        {"name": "x", "host": "", "control_port": 0, "hosting": [{"stage": "a", "x": 1}]},
+        {"name": "x", "host": "", "control_port": 0, "addrs": ["a"] * 17},
+    ):
         with pytest.raises(ValueError):
             Member.from_dict(raw)
 

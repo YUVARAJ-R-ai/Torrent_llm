@@ -56,3 +56,16 @@ def test_token_ids_cross_every_profile_exactly():
     for pid in codecs.ids:
         out = codecs.decode(codecs.codec(pid).encode(ids, request_id="r", hop=0))
         assert torch.equal(out, ids), pid
+
+
+def test_the_model_manifest_is_validated_and_part_of_the_pool_signature():
+    from torrent_llm.pool.blobs import manifest_digest
+    from torrent_llm.pool.config import PoolConfig
+
+    base = PoolConfig(model_id="m", num_layers=4)
+    digest = manifest_digest([])
+    pinned = PoolConfig.from_dict({"model_id": "m", "num_layers": 4, "model_manifest": digest})
+    assert pinned.model_manifest == digest
+    assert pinned.signature != base.signature  # devices with different weights never mix
+    with pytest.raises(ValueError, match="sha256"):
+        PoolConfig(model_id="m", num_layers=4, model_manifest="ABC")

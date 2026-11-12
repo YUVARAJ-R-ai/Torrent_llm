@@ -38,6 +38,7 @@ from torrent_llm.net.records import PeerRecord
 from torrent_llm.net.rpc import CallContext, RpcError
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
 from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
+from torrent_llm.pool.forwarding import Forwarder
 from torrent_llm.pool.gossip import PoolMismatch, choose_targets, exchange
 from torrent_llm.pool.hosting import GRPC, OVERLAY, Loader, ShardHost
 from torrent_llm.pool.members import (
@@ -166,6 +167,8 @@ class PeerDaemon:
             privacy=privacy,
         )
 
+        #: Serves peer-to-peer forwarding (``routing: relay``) once the device starts.
+        self._forwarder: Forwarder | None = None
         self._incarnation = time.time_ns()
         self._heartbeat = 0
         self._state = ACTIVE
@@ -186,6 +189,7 @@ class PeerDaemon:
         """Begin the beat in the background."""
         if self.node is not None:
             serve_shards(self.node, self.shards)
+            self._forwarder = Forwarder(self.node, self.shards)
             self.node.register("pool.gossip", self._on_gossip, blocking=True)
             self.node.register("pool.push", self._on_push, blocking=True)
             self.publish()
@@ -218,6 +222,8 @@ class PeerDaemon:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        if self._forwarder is not None:
+            self._forwarder.close()
         self.shards.close()
 
     def _loop(self) -> None:
@@ -383,8 +389,12 @@ class PeerDaemon:
             if record is not None:
                 records.append(record.to_dict())
         return json.dumps(
-            {"pool": self.pool_id, "stamps": self.table.stamps(),
-             "rows": [m.to_dict() for m in members], "records": records}
+            {
+                "pool": self.pool_id,
+                "stamps": self.table.stamps(),
+                "rows": [m.to_dict() for m in members],
+                "records": records,
+            }
         ).encode()
 
     def _unbundle(self, body: bytes) -> dict:
@@ -427,9 +437,7 @@ class PeerDaemon:
         assert self.node is not None
         for peer in self._gossip_targets():
             try:
-                _, reply = self.node.call(
-                    peer, "pool.gossip", body=self._bundle([]), timeout=3.0
-                )
+                _, reply = self.node.call(peer, "pool.gossip", body=self._bundle([]), timeout=3.0)
                 theirs = self._unbundle(reply)
                 missing = self.table.newer_than(theirs["stamps"])
                 if missing:

@@ -34,6 +34,7 @@ from torrent_llm.link import LinkProfile
 from torrent_llm.net.node import Node
 from torrent_llm.pool.codec_policy import CodecChooser, LinkEstimator
 from torrent_llm.pool.config import PoolConfig
+from torrent_llm.pool.forwarding import RelayChain
 from torrent_llm.pool.members import MemberTable
 from torrent_llm.pool.overlay import OverlaySender
 from torrent_llm.pool.router import NoReplica, Replica, pick_route
@@ -262,7 +263,7 @@ class PoolRunner:
             nodes=[NodeConfig(address=r.address, link=link_of(r)) for r in route],
         )
 
-    def _chain(self, route: list[Replica]) -> ChainRunner:
+    def _chain(self, route: list[Replica]) -> ChainRunner | RelayChain:
         """A chain over ``route``: gRPC, or the overlay when this runner has a node."""
         topology = self._topology(route)
         if self.node is None:
@@ -271,6 +272,12 @@ class PoolRunner:
         if codecs is None or chooser is None:
             raise RuntimeError("an overlay runner needs codec profiles")
         default = codecs.codec(self.config.policy()["fixed"])
+        if self.config.routing == "relay":
+            # shortcut: one codec for the whole route (the asker sees no per-link timing
+            # here); per-link adaptive choice would have to move onto each stage.
+            return RelayChain(
+                node, [(r.member, r.stage, r.address) for r in route], default, codecs=codecs
+            )
 
         def client(hop: int, cfg: NodeConfig) -> ShardClient:
             replica = route[hop]
