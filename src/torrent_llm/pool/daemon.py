@@ -20,6 +20,7 @@ And it serves a small HTTP API for everything else (see ``api.py``).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -32,10 +33,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from torrent_llm.codec import get_codec
+from torrent_llm.net.node import Node
+from torrent_llm.net.records import PeerRecord
+from torrent_llm.net.rpc import CallContext, RpcError
 from torrent_llm.pool.config import DeviceProfile, PoolConfig
 from torrent_llm.pool.discovery import DISCOVERY_PORT, Announcement, Discovery
+from torrent_llm.pool.forwarding import Forwarder
 from torrent_llm.pool.gossip import PoolMismatch, choose_targets, exchange
-from torrent_llm.pool.hosting import Loader, ShardHost
+from torrent_llm.pool.hosting import GRPC, OVERLAY, Loader, ShardHost
 from torrent_llm.pool.members import (
     ACTIVE,
     ALIVE,
@@ -46,9 +51,11 @@ from torrent_llm.pool.members import (
     Member,
     MemberTable,
 )
+from torrent_llm.pool.overlay import serve_shards
 from torrent_llm.pool.owner import OwnerMonitor
 from torrent_llm.pool.placement import wanted_stages
 from torrent_llm.pool.runner import PoolRunner
+from torrent_llm.pool.trust import TrustStore
 from torrent_llm.shard import resolve_device
 
 logger = logging.getLogger(__name__)
@@ -97,9 +104,20 @@ class PeerDaemon:
         discovery_port: int = DISCOVERY_PORT,
         shard_port_base: int = 0,
         clock: Callable[[], float] = time.monotonic,
+        node: Node | None = None,
+        trust: TrustStore | None = None,
+        verify_rate: float = 0.0,
+        privacy: bool = False,
     ) -> None:
         self.config = config
+        self.trust = trust
         self.profile = profile
+        #: The overlay this device lives on. With it, the device's name is its peer id,
+        #: its entry is signed, gossip and shard calls travel encrypted over the node,
+        #: and HTTP is only the local control panel. Without it (older pools, tests),
+        #: gossip is HTTP and every stage is a gRPC port.
+        self.node = node
+        self._name = node.peer_id if node is not None else profile.name
         self.host = host
         self.bind = bind or host
         self.control_port = control_port
@@ -110,7 +128,11 @@ class PeerDaemon:
         self.warmup_s = warmup_s
 
         self.table = MemberTable(
-            profile.name, suspect_after=suspect_after, down_after=down_after, clock=clock
+            self._name,
+            suspect_after=suspect_after,
+            down_after=down_after,
+            clock=clock,
+            require_signatures=node is not None,
         )
         self.shards = ShardHost(
             config.specs(),
@@ -122,6 +144,8 @@ class PeerDaemon:
             port_base=shard_port_base,
             max_requests=profile.request_limit(resolve_device(profile.device)),
             clock=clock,
+            transport=OVERLAY if node is not None else GRPC,
+            codecs=config.codec_set() if node is not None else None,
         )
         self.owner_monitor = None
         self.discover = discover
@@ -132,8 +156,19 @@ class PeerDaemon:
         self._asked = 0
         self._asked_tokens = 0
         self._reported_mismatches: set[str] = set()
-        self.runner = PoolRunner(config, self.table, me=profile.name, token=token)
+        self.runner = PoolRunner(
+            config,
+            self.table,
+            me=self._name,
+            token=token,
+            node=node,
+            trust=trust,
+            verify_rate=verify_rate,
+            privacy=privacy,
+        )
 
+        #: Serves peer-to-peer forwarding (``routing: relay``) once the device starts.
+        self._forwarder: Forwarder | None = None
         self._incarnation = time.time_ns()
         self._heartbeat = 0
         self._state = ACTIVE
@@ -152,9 +187,15 @@ class PeerDaemon:
 
     def start(self) -> None:
         """Begin the beat in the background."""
+        if self.node is not None:
+            serve_shards(self.node, self.shards)
+            self._forwarder = Forwarder(self.node, self.shards)
+            self.node.register("pool.gossip", self._on_gossip, blocking=True)
+            self.node.register("pool.push", self._on_push, blocking=True)
+            self.publish()
         self._thread = threading.Thread(target=self._loop, name="peer-beat", daemon=True)
         self._thread.start()
-        if self.discover:
+        if self.discover and self.node is None:
             self.discovery = Discovery(
                 Announcement(self.name, self.host, self.control_port, self.pool_id),
                 self._found,
@@ -181,6 +222,8 @@ class PeerDaemon:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        if self._forwarder is not None:
+            self._forwarder.close()
         self.shards.close()
 
     def _loop(self) -> None:
@@ -205,6 +248,8 @@ class PeerDaemon:
     def pool_id(self) -> str:
         """Names the pool, so two groups on one network never mix."""
         c = self.config
+        if self.node is not None:
+            return c.signature
         return f"{c.model_id}/{c.stages}/{c.replicas}/{c.codec_signature}"
 
     def _found(self, found: Announcement) -> None:
@@ -231,7 +276,16 @@ class PeerDaemon:
 
     @property
     def name(self) -> str:
-        return self.profile.name
+        return self._name
+
+    def label_of(self, name: str | None) -> str:
+        """What to call a device in messages: its label, not a 32-character peer id."""
+        if name is None:
+            return ""
+        member = self.table.get(name)
+        if member is not None and member.label:
+            return member.label
+        return name[:8] if self.node is not None else name
 
     @property
     def state(self) -> str:
@@ -246,7 +300,9 @@ class PeerDaemon:
                 name=self.name,
                 host=self.host,
                 control_port=self.control_port,
-                label=self.profile.label or self.name,
+                # Over the overlay ``self.name`` is a 32-character peer id; the device's
+                # own name (--name, the hostname by default) reads far better.
+                label=self.profile.label or self.profile.name or self.name,
                 os=platform.system(),
                 hostname=socket.gethostname(),
                 device=self.shards.device() or resolve_device(self.profile.device),
@@ -260,13 +316,19 @@ class PeerDaemon:
                 asked_tokens=self._asked_tokens,
                 incarnation=self._incarnation,
                 heartbeat=self._heartbeat,
+                addrs=tuple(self.node.addresses()) if self.node is not None else (),
             )
+            if self.node is not None:
+                member = member.signed_by(self.node.identity)
             self.table.set_self(member)
             return member
 
     # --- gossip --------------------------------------------------------------
 
     def _gossip(self) -> None:
+        if self.node is not None:
+            self._gossip_overlay()
+            return
         digest = self.table.digest()
         for url in choose_targets(self.table, self.join, rng=self._rng):
             try:
@@ -289,6 +351,105 @@ class PeerDaemon:
             name,
         )
 
+    # --- gossip over the overlay ------------------------------------------------
+    #
+    # One exchange is two calls. ``pool.gossip`` sends my digest (who I know, at which
+    # stamp) and gets back every entry I lack plus the other side's digest;
+    # ``pool.push`` then sends the entries the other side lacks. Entries travel with
+    # their devices' signed address records, so anyone learned of can be dialled.
+    # Everything rides in the body as JSON: a header is limited to 64 KiB.
+
+    def _gossip_targets(self) -> list[str]:
+        assert self.node is not None
+        others = [m for m in self.table.members() if m.name != self.name and m.state != LEFT]
+        alive = [m.name for m in others if self.table.liveness(m.name) == ALIVE]
+        gone = [m.name for m in others if self.table.liveness(m.name) != ALIVE]
+        targets = self._rng.sample(alive, min(2, len(alive)))
+        if gone:
+            targets.append(self._rng.choice(gone))
+        if not alive:
+            targets.extend(p for p in self.node.connected_peers() if p not in targets)
+            if not targets:
+                self._connect_seeds()
+                targets.extend(self.node.connected_peers())
+        return list(dict.fromkeys(targets))
+
+    def _connect_seeds(self) -> None:
+        assert self.node is not None
+        for seed in self.join:
+            address = seed if "://" in seed else f"tcp://{seed}"
+            try:
+                self.node.connect(address, timeout=3.0)
+            except Exception as exc:  # noqa: BLE001 - a seed may simply be down
+                logger.debug("seed %s: %s", seed, exc)
+
+    def _bundle(self, members: list[Member]) -> bytes:
+        assert self.node is not None
+        records = []
+        for m in members:
+            record = self.node.record() if m.name == self.name else self.node.record_of(m.name)
+            if record is not None:
+                records.append(record.to_dict())
+        return json.dumps(
+            {
+                "pool": self.pool_id,
+                "stamps": self.table.stamps(),
+                "rows": [m.to_dict() for m in members],
+                "records": records,
+            }
+        ).encode()
+
+    def _unbundle(self, body: bytes) -> dict:
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RpcError("bad_request", "gossip body is not JSON") from exc
+        if not isinstance(data, dict):
+            raise RpcError("bad_request", "gossip body is not an object")
+        if data.get("pool") != self.pool_id:
+            raise RpcError(
+                "denied", "different pool settings", header={"reason": "pool", "pool": self.pool_id}
+            )
+        assert self.node is not None
+        for raw in (data.get("records") or [])[:1024]:
+            try:
+                self.node.add_record(PeerRecord.from_dict(raw))
+            except ValueError:
+                continue
+        rows = []
+        for raw in (data.get("rows") or [])[:1024]:
+            try:
+                rows.append(Member.from_dict(raw))
+            except ValueError:
+                continue
+        self.table.merge(rows)
+        stamps = data.get("stamps")
+        data["stamps"] = stamps if isinstance(stamps, dict) else {}
+        return data
+
+    def _on_gossip(self, ctx: CallContext, header: dict, body: bytes) -> tuple[dict, bytes]:
+        data = self._unbundle(body)
+        return {}, self._bundle(self.table.newer_than(data["stamps"]))
+
+    def _on_push(self, ctx: CallContext, header: dict, body: bytes) -> tuple[dict, bytes]:
+        self._unbundle(body)
+        return {}, b""
+
+    def _gossip_overlay(self) -> None:
+        assert self.node is not None
+        for peer in self._gossip_targets():
+            try:
+                _, reply = self.node.call(peer, "pool.gossip", body=self._bundle([]), timeout=3.0)
+                theirs = self._unbundle(reply)
+                missing = self.table.newer_than(theirs["stamps"])
+                if missing:
+                    self.node.call(peer, "pool.push", body=self._bundle(missing), timeout=3.0)
+            except RpcError as exc:
+                if exc.code == "denied" and exc.header.get("reason") == "pool":
+                    self._report_mismatch(peer, self.label_of(peer))
+                else:
+                    logger.debug("gossip with %s failed: %s", peer[:8], exc)
+
     def receive(self, sender: str, incoming: list[Member]) -> list[dict]:
         """Another device pushed its table; merge it and answer with mine."""
         self.table.merge(incoming)
@@ -304,6 +465,11 @@ class PeerDaemon:
 
         alive = self.table.alive()
         wanted = set(wanted_stages(self.config, alive).get(self.name, []))
+        ends = {0, self.config.stages - 1}
+        room = self.profile.slots(self.config.shard_mb)
+        if self.runner.privacy and room >= len(ends):
+            # The ends stay here first; whatever room is left serves the pool as usual.
+            wanted = ends | set(sorted(wanted - ends)[: room - len(ends)])
         held = self.shards.stages()
 
         if state == ACTIVE:
@@ -383,7 +549,7 @@ class PeerDaemon:
             self._reported_clashes.add(address)
             self._record(
                 "down",
-                f"another device at {address} is also called {self.name}; "
+                f"another device at {address} is also called {self.label_of(self.name)}; "
                 "give each device its own --name or they will confuse each other",
                 self.name,
             )
@@ -400,37 +566,39 @@ class PeerDaemon:
             online = sum(1 for _, live in self.table.snapshot() if live == ALIVE)
             self._record(
                 "joined",
-                f"{self.name} is up, with {online} device{'s' if online != 1 else ''} in the pool",
+                f"{self.label_of(self.name)} is up, with {online} "
+                f"device{'s' if online != 1 else ''} in the pool",
                 self.name,
             )
 
         for name, (liveness, state, stages) in now.items():
+            who = self.label_of(name)
             if name == self.name and name not in self._previous:
                 continue
             before = self._previous.get(name)
             if before is None:
-                self._record("joined", f"{name} joined the pool", name)
+                self._record("joined", f"{who} joined the pool", name)
                 before = (liveness, state, ())
             if before[0] == ALIVE and liveness != ALIVE:
                 verb = "left" if state == LEFT else "went down"
-                self._record("down", f"{name} {verb}", name)
+                self._record("down", f"{who} {verb}", name)
             elif before[0] != ALIVE and liveness == ALIVE and name in self._previous:
-                self._record("up", f"{name} is back", name)
+                self._record("up", f"{who} is back", name)
             if before[1] != state and state != LEFT:
                 text = {
-                    DRAINING: f"{name} is being used by its owner, handing its work over",
-                    AWAY: f"{name} has released its memory",
-                    ACTIVE: f"{name} is lending its resources again",
+                    DRAINING: f"{who} is being used by its owner, handing its work over",
+                    AWAY: f"{who} has released its memory",
+                    ACTIVE: f"{who} is lending its resources again",
                 }.get(state)
                 if text:
                     self._record("state", text, name)
             for stage, status in set(stages) - set(before[2]):
                 if status == READY:
-                    self._record("stage", f"{name} now serves stage {stage + 1}", name)
+                    self._record("stage", f"{who} now serves stage {stage + 1}", name)
             gone = {s for s, _ in before[2]} - {s for s, _ in stages}
             for stage in sorted(gone):
                 if liveness == ALIVE:
-                    self._record("stage", f"{name} stopped serving stage {stage + 1}", name)
+                    self._record("stage", f"{who} stopped serving stage {stage + 1}", name)
         self._previous = now
 
     # --- reading ---------------------------------------------------------------

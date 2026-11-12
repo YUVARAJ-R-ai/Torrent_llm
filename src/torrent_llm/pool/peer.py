@@ -15,10 +15,12 @@ import signal
 import socket
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
 import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from torrent_llm.chat import DEFAULT_SYSTEM_PROMPT
@@ -67,6 +69,7 @@ def launch(
     cors_regex: str | None = None,
     stop_token_ids: set[int] | None = None,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
+    extend_app: Callable[[FastAPI, PeerDaemon], None] | None = None,
     **daemon_kwargs,
 ) -> RunningPeer:
     """Bring up one device and return once it is answering HTTP."""
@@ -100,6 +103,7 @@ def launch(
         stop_token_ids=stop_token_ids,
         system_prompt=system_prompt,
         on_leave=leave,
+        extend=(lambda app: extend_app(app, daemon)) if extend_app is not None else None,
     )
     if cors_origins or cors_regex:
         app.add_middleware(
@@ -174,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
         print(report(checks))
         return 1 if any(c.status == FAIL for c in checks) else 0
 
+    if args.mode:
+        from torrent_llm.pool import swarm_cli
+
+        return swarm_cli.main(args, settings)
+
     config, profile = settings.config, settings.profile
 
     try:
@@ -243,7 +252,96 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["RunningPeer", "launch", "main"]
+def start_pool_device(
+    settings: PeerSettings, *, node, device=None, ui_lan: bool = False, privacy: bool = False
+) -> RunningPeer:
+    """Run the pool device on an overlay ``node`` (the swarm modes).
+
+    The control panel listens on 127.0.0.1 (or on the LAN with ``ui_lan``) and its
+    owner actions need the admin token from the data directory.
+    """
+    from transformers import AutoTokenizer
+
+    from torrent_llm.chat import stop_token_ids
+    from torrent_llm.net import paths
+    from torrent_llm.pool.api_swarm import add_swarm_routes
+    from torrent_llm.pool.model_share import ensure_model
+    from torrent_llm.pool.net import lan_address
+    from torrent_llm.pool.swarm_cli import admin_token
+    from torrent_llm.pool.trust import TrustStore
+
+    config, profile = settings.config, settings.profile
+    public = device is not None and device.spec.public
+    # The model from this disk, or fetched from devices in the swarm that have it.
+    source = ensure_model(node, config.model_id, public=public, pinned=config.model_manifest)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            source, trust_remote_code=config.trust_remote_code
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not load {config.model_id} ({exc}). The model is probably not "
+            "downloaded: connect to the internet and run scripts/setup.sh "
+            "(scripts\\setup.ps1 on Windows)."
+        ) from exc
+
+    def loader(spec: ShardSpec):
+        return load_shard(
+            source,
+            spec,
+            device=profile.device,
+            dtype=getattr(torch, config.dtype),
+            trust_remote_code=config.trust_remote_code,
+        )
+
+    host = lan_address() if ui_lan else "127.0.0.1"
+    token = admin_token()
+    trust = TrustStore(paths.trust_path())
+    node.add_gatekeeper(trust.gatekeeper)  # banned devices cannot even connect
+    # Strangers get checked; friends who share an invite are trusted unless the pool says otherwise.
+    verify_rate = config.verify_rate
+    if verify_rate is None:
+        verify_rate = 0.05 if public else 0.0
+    stop_ids = stop_token_ids(source, tokenizer)
+
+    def extend(app: FastAPI, daemon: PeerDaemon) -> None:
+        if device is not None:
+            add_swarm_routes(
+                app,
+                daemon=daemon,
+                device=device,
+                trust=trust,
+                admin_token=token,
+                tokenizer=tokenizer,
+                stop_token_ids=stop_ids,
+                link_estimator=daemon.runner.links,
+            )
+
+    peer = launch(
+        config,
+        profile,
+        loader,
+        tokenizer,
+        host=host,
+        port=settings.port,
+        bind="0.0.0.0" if ui_lan else "127.0.0.1",
+        join=[],
+        token=token,
+        cors_origins=settings.cors_origins,
+        cors_regex=settings.cors_regex,
+        stop_token_ids=stop_ids,
+        discover=False,
+        node=node,
+        trust=trust,
+        verify_rate=verify_rate,
+        privacy=privacy,
+        extend_app=extend,
+    )
+    print(f"  Control panel: http://{host}:{peer.port}", flush=True)
+    return peer
+
+
+__all__ = ["RunningPeer", "launch", "main", "start_pool_device"]
 
 if __name__ == "__main__":
     sys.exit(main())

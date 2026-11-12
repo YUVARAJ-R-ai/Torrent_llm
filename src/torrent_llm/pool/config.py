@@ -13,12 +13,16 @@ describe it, and they are kept apart on purpose:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from torrent_llm.codec.profiles import CodecProfile, CodecSet
 from torrent_llm.link import LinkProfile
 from torrent_llm.shard import ShardSpec, plan_even
 
@@ -55,6 +59,23 @@ class PoolConfig:
     #: codecs would hand each other bytes they cannot read.
     codec: str = "raw"
     codec_args: dict[str, Any] = field(default_factory=dict)
+    #: Named codec settings every device holds (``{id: {name, **args}}``). ``None``
+    #: means one profile made from ``codec``/``codec_args`` (older pool files).
+    codecs: dict[str, dict[str, Any]] | None = None
+    #: How a hop's profile is chosen: ``{"mode": "fixed", "fixed": id}`` or
+    #: ``{"mode": "adaptive", "ladder": [ids, best quality first], "prefill_only":
+    #: bool, "target_ms": float}``. ``None``: fixed on the first profile.
+    codec_policy: dict[str, Any] | None = None
+    #: ``requester``: the asking device sends every hop (and gets every reply);
+    #: ``relay``: each stage forwards to the next (issue #37).
+    routing: str = "requester"
+    #: Share of passes re-checked on another copy to catch a lying device. ``None``
+    #: picks the swarm's default (some in a public swarm, none in an invite swarm).
+    verify_rate: float | None = None
+    #: SHA-256 (hex) of the model's file manifest (``blobs.manifest_digest``). Set, it
+    #: lets a device fetch the weights from other devices instead of the internet and
+    #: check every file against what the whole swarm agreed on.
+    model_manifest: str | None = None
 
     def __post_init__(self) -> None:
         if self.stages < 1 or self.stages > self.num_layers:
@@ -63,6 +84,39 @@ class PoolConfig:
             raise ValueError(f"replicas must be at least 1, got {self.replicas}")
         if self.shard_mb < 1:
             raise ValueError(f"shard_mb must be positive, got {self.shard_mb}")
+        if self.routing not in ("requester", "relay"):
+            raise ValueError(f"routing must be 'requester' or 'relay', got {self.routing!r}")
+        if self.model_manifest is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", self.model_manifest
+        ):
+            raise ValueError("model_manifest must be a sha256 hex digest")
+        if self.verify_rate is not None and not 0.0 <= self.verify_rate <= 1.0:
+            raise ValueError(f"verify_rate must be in [0, 1], got {self.verify_rate}")
+        codecs = self.codec_set()  # validates the profiles
+        policy = self.policy()
+        for profile_id in [policy.get("fixed"), *policy.get("ladder", [])]:
+            if profile_id is not None and profile_id not in codecs:
+                raise ValueError(f"codec policy names unknown profile {profile_id!r}")
+        if policy["mode"] not in ("fixed", "adaptive"):
+            raise ValueError(f"codec policy mode must be fixed or adaptive, not {policy['mode']!r}")
+
+    def codec_set(self) -> CodecSet:
+        """The pool's codec profiles."""
+        if self.codecs is not None:
+            return CodecSet.from_config(self.codecs)
+        legacy_id = re.sub(r"[^a-z0-9_-]", "-", self.codec_signature.lower())[:32] or "raw"
+        return CodecSet([CodecProfile(legacy_id, self.codec, dict(self.codec_args))])
+
+    def policy(self) -> dict[str, Any]:
+        """The codec policy with defaults filled in."""
+        first = self.codec_set().ids[0]
+        raw = dict(self.codec_policy or {})
+        raw.setdefault("mode", "fixed")
+        raw.setdefault("fixed", first)
+        raw.setdefault("ladder", [raw["fixed"]])
+        raw.setdefault("prefill_only", False)
+        raw.setdefault("target_ms", 50.0)
+        return raw
 
     def specs(self) -> list[ShardSpec]:
         """The layer range of every stage, in pipeline order."""
@@ -82,6 +136,11 @@ class PoolConfig:
             "dtype",
             "trust_remote_code",
             "use_spare_capacity",
+            "codecs",
+            "codec_policy",
+            "routing",
+            "verify_rate",
+            "model_manifest",
         }
         fields = {k: v for k, v in raw.items() if k in known}
         codec = raw.get("codec", "raw")
@@ -92,8 +151,20 @@ class PoolConfig:
         return cls(**fields)
 
     @property
+    def signature(self) -> str:
+        """Everything two devices must agree on to work together, in one string."""
+        policy = json.dumps(self.policy(), sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(
+            f"{self.codec_set().signature()}|{policy}|{self.routing}"
+            f"{'|' + self.model_manifest if self.model_manifest else ''}".encode()
+        ).hexdigest()[:12]
+        return f"{self.model_id}/{self.stages}/{self.replicas}/{self.dtype}/{digest}"
+
+    @property
     def codec_signature(self) -> str:
         """A short description of the codec, so devices with different ones never mix."""
+        if self.codecs is not None:
+            return f"profiles-{self.codec_set().signature()[:8]}"
         name = self.codec
         weights = self.codec_args.get("weights_path")
         rank = self.codec_args.get("rank")

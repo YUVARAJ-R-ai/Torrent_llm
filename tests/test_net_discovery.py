@@ -233,6 +233,7 @@ def test_stopping_ends_its_threads():
     assert not any(t.is_alive() for t in a._threads + b._threads)
 
 
+@pytest.mark.network
 def test_a_real_broadcast_reaches_a_listener_on_this_machine():
     # The one test that uses the real broadcast address. Skipped where the sandbox
     # or network does not allow broadcasting, since that is not what is under test.

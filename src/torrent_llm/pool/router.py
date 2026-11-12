@@ -45,7 +45,9 @@ class Replica:
 
     @property
     def address(self) -> str:
-        return f"{self.host}:{self.port}"
+        """Names this copy for load and latency bookkeeping. Over the overlay a stage
+        has no port of its own, so it is named by device and stage."""
+        return f"{self.host}:{self.port}" if self.port else f"{self.member}#{self.stage}"
 
 
 def replicas_of(
@@ -68,7 +70,7 @@ def replicas_of(
         hosted = m.hosts(stage, ready_only=True)
         if hosted is None or hosted.status != READY:
             continue
-        address = f"{m.host}:{hosted.port}"
+        address = f"{m.host}:{hosted.port}" if hosted.port else f"{m.name}#{stage}"
         found.append(
             Replica(
                 stage=stage,
@@ -99,8 +101,13 @@ def pick_route(
     local_load: Mapping[str, int] | None = None,
     rtt_ms: Mapping[str, float] | None = None,
     rng: random.Random | None = None,
+    pin: Mapping[int, str] | None = None,
 ) -> list[Replica]:
     """One copy of every stage, in pipeline order.
+
+    ``pin`` forces a stage onto one device (privacy mode pins the first and last
+    stage to the asking device); a pinned stage that device does not have ready
+    raises :class:`NoReplica` for it.
 
     Raises:
         NoReplica: some stage has no usable copy, naming the first one.
@@ -109,6 +116,8 @@ def pick_route(
     route = []
     for stage in range(config.stages):
         options = replicas_of(stage, members, exclude=exclude, local_load=local_load)
+        if pin and stage in pin:
+            options = [r for r in options if r.member == pin[stage]]
         if not options:
             raise NoReplica(stage)
         best = min(score(r, rtt_ms) for r in options)

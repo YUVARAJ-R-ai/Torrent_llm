@@ -94,7 +94,56 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=["create", "join", "public", "bootstrap"],
+        help=(
+            "create: start a new invite swarm and print its link; join LINK: join one; "
+            "public: join the public swarm; bootstrap: run a relay/discovery node with no "
+            "model. Without a mode, the device joins a pool on this network as before."
+        ),
+    )
+    parser.add_argument("invite", nargs="?", help="the tllm://join/... link (with join)")
+    parser.add_argument(
         "--pool", help="pool file: model, stages, replicas (default: configs/pool.yaml)"
+    )
+    parser.add_argument("--swarm-name", help="name of a new invite swarm (with create)")
+    parser.add_argument(
+        "--bootstrap",
+        action="append",
+        default=[],
+        help="address of a swarm member, e.g. tcp://203.0.113.7:9100 (repeatable)",
+    )
+    parser.add_argument(
+        "--listen-port",
+        type=int,
+        default=9100,
+        help="TCP port for encrypted peer connections in a swarm (default 9100)",
+    )
+    parser.add_argument(
+        "--no-upnp", action="store_true", help="do not ask the router to forward the port"
+    )
+    parser.add_argument(
+        "--no-inbound",
+        action="store_true",
+        help="advertise no direct address, so others reach this device only through a "
+        "relay (what a strict NAT does; for testing that path)",
+    )
+    parser.add_argument(
+        "--relay", action="store_true", help="always offer to relay for unreachable devices"
+    )
+    parser.add_argument(
+        "--privacy",
+        action="store_true",
+        help=(
+            "keep the first and last stage of the model on this device, so other devices "
+            "never see your prompt's or answer's tokens (needs memory for two stages)"
+        ),
+    )
+    parser.add_argument(
+        "--ui-lan",
+        action="store_true",
+        help="also serve the read-only dashboard to this network (default: this machine only)",
     )
     parser.add_argument("--check", action="store_true", help="check this machine is ready and exit")
     parser.add_argument(

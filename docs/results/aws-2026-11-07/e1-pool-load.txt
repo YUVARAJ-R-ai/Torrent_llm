@@ -1,0 +1,36 @@
+### concurrency 1
+4 devices online; stage copies [2, 2]
+
+24/24 answered in 46.4s  (0 failed)
+  0.52 questions/s, 3.4 tokens/s
+  answer time: median 1.93s, slowest 2.91s
+
+forward passes by device and stage:
+  stage 1 on A                   70  #########################
+  stage 1 on C                  110  ########################################
+  stage 2 on B                  110  ########################################
+  stage 2 on D                   70  #########################
+### concurrency 4
+4 devices online; stage copies [2, 2]
+
+24/24 answered in 18.1s  (0 failed)
+  1.33 questions/s, 8.6 tokens/s
+  answer time: median 2.72s, slowest 4.87s
+
+forward passes by device and stage:
+  stage 1 on A                   90  ###################################
+  stage 1 on C                   90  ###################################
+  stage 2 on B                  101  ########################################
+  stage 2 on D                   79  ###############################
+### concurrency 8
+4 devices online; stage copies [2, 2]
+
+24/24 answered in 14.5s  (0 failed)
+  1.65 questions/s, 10.7 tokens/s
+  answer time: median 4.05s, slowest 7.49s
+
+forward passes by device and stage:
+  stage 1 on A                   92  ########################################
+  stage 1 on C                   88  ######################################
+  stage 2 on B                   91  #######################################
+  stage 2 on D                   89  ######################################
