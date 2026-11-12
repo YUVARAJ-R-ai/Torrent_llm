@@ -124,6 +124,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-upnp", action="store_true", help="do not ask the router to forward the port"
     )
     parser.add_argument(
+        "--no-inbound",
+        action="store_true",
+        help="advertise no direct address, so others reach this device only through a "
+        "relay (what a strict NAT does; for testing that path)",
+    )
+    parser.add_argument(
         "--relay", action="store_true", help="always offer to relay for unreachable devices"
     )
     parser.add_argument(

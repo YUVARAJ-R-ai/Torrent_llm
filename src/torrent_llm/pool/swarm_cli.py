@@ -154,7 +154,9 @@ def resolve_spec(mode: str, invite: str | None, config: PoolConfig, args) -> Swa
     raise SwarmError(f"unknown mode {mode!r}")
 
 
-def start_node(spec: SwarmSpec, *, listen_port: int, label: str, relay: bool) -> Node:
+def start_node(
+    spec: SwarmSpec, *, listen_port: int, label: str, relay: bool, inbound: bool = True
+) -> Node:
     print(
         "Preparing this device's identity"
         + (" (proof of work, a few seconds the first time)..." if spec.public else "..."),
@@ -171,6 +173,7 @@ def start_node(spec: SwarmSpec, *, listen_port: int, label: str, relay: bool) ->
             min_pow_bits=spec.min_pow_bits,
             listen_host="0.0.0.0",
             listen_port=listen_port,
+            advertise_local=inbound,
             attrs={"label": label[:64], **({"relay": True} if relay else {})},
         )
     )
@@ -218,12 +221,16 @@ def main(args, settings) -> int:
             listen_port=args.listen_port,
             label=settings.profile.label or settings.profile.name,
             relay=args.relay or args.mode == "bootstrap",
+            inbound=not getattr(args, "no_inbound", False),
         )
     except SwarmError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
     services = SwarmServices(
-        node, spec, use_upnp=not args.no_upnp, relay_always=args.relay or args.mode == "bootstrap"
+        node,
+        spec,
+        use_upnp=not (args.no_upnp or getattr(args, "no_inbound", False)),
+        relay_always=args.relay or args.mode == "bootstrap",
     )
     services.start()
     from torrent_llm.pool.model_share import serve_models

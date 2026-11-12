@@ -94,6 +94,10 @@ DEFAULT_LIMITS: dict[str, Limit] = {
     "shard": Limit(rate=200.0, burst=400.0),
     "blob": Limit(rate=50.0, burst=100.0),
     "trust": Limit(rate=20.0, burst=40.0),
+    # Each check makes this node dial out (up to 4 sockets): a few a minute is plenty.
+    "autonat": Limit(rate=0.2, burst=3.0),
+    #: Any prefix not listed above, so a new service is never unlimited by accident.
+    "*": Limit(rate=20.0, burst=40.0),
 }
 
 
@@ -187,6 +191,7 @@ class Node:
         self._lock = threading.Lock()
 
         limits = config.limits if config.limits is not None else DEFAULT_LIMITS
+        self._limited = frozenset(limits)
         self._rate_limiter = RateLimiter(limits)
 
         self._handlers: dict[str, tuple[SyncHandler | Handler, bool]] = {}
@@ -582,6 +587,8 @@ class Node:
                     raise RpcError("denied", str(refusal), peer=ctx.peer_id)
 
             kind = method.split(".", 1)[0]
+            if kind not in self._limited:
+                kind = "*"
             if not self._rate_limiter.allow(ctx.peer_id, kind):
                 raise RpcError("denied", "rate limited", peer=ctx.peer_id)
 
