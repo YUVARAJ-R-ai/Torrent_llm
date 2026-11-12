@@ -733,6 +733,10 @@ class Connection:
         self._enqueue_item(item)
         await fut
 
+    async def wait_closed(self) -> None:
+        """Return once this connection is fully closed, for whatever reason."""
+        await self._close_event.wait()
+
     async def close(self, reason: str = "closed") -> None:
         if self._closed:
             await self._close_event.wait()

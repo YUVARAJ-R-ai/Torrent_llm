@@ -804,3 +804,16 @@ def test_byte_counters_move():
         await b.close()
 
     asyncio.run(go())
+
+
+def test_wait_closed_returns_when_the_other_side_hangs_up():
+    async def _test():
+        conn_a, conn_b = await _rpc_pair()
+        waiter = asyncio.ensure_future(conn_a.wait_closed())
+        await asyncio.sleep(0.05)
+        assert not waiter.done()
+        await conn_b.close()
+        await asyncio.wait_for(waiter, 3)
+        await conn_a.close()
+
+    asyncio.run(_test())
