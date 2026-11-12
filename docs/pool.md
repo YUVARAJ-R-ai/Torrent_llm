@@ -214,6 +214,34 @@ Throughput goes up and each answer gets slower, which is what sharing should do.
 When the pool is quiet, everything goes through the fastest device; slower ones take
 work as the fast one's queue grows.
 
+### Relay routing
+
+With `routing: relay` in the pool file, the asking device sends the prompt to the first
+stage with the whole route attached; each stage runs its layers and hands the hidden
+state straight to the next; the last stage sends back only the chosen token (issue #37,
+`pool/forwarding.py`). Each link is crossed once per token instead of twice. Failover,
+busy handling and the cache-position checks work as before; a stage that cannot reach
+the next one says which, and one that goes silent is named when the step's deadline
+passes.
+
+`scripts/bench_throughput.py` (issue #36) runs both modes on the same pool, with every
+message between two devices paying the same simulated link. Qwen2.5-0.5B, 3 stages on one
+CPU machine, 40 ms round trip and 20 Mbit/s per link, 16 new tokens:
+
+| routing | prompt | requests at once | tokens/s each | tokens/s total | gap between tokens (median) | data per request |
+|---|---|---|---|---|---|---|
+| requester | 16 | 1 | 3.68 | 3.68 | 236 ms | 434 KiB |
+| relay | 16 | 1 | 4.47 | 4.47 | 197 ms | 217 KiB |
+| requester | 128 | 1 | 2.92 | 2.92 | 244 ms | 2003 KiB |
+| relay | 128 | 1 | 3.75 | 3.75 | 194 ms | 1002 KiB |
+| requester | 16 | 4 | 2.18 | 8.63 | 332 ms | 434 KiB |
+| relay | 16 | 4 | 2.35 | 9.36 | 297 ms | 217 KiB |
+
+Relay is 1.1x to 1.3x faster here and always moves half the data. The gain grows with link
+latency and with the number of stages, and shrinks when compute dominates (as with four
+requests sharing one CPU). Both modes produced the same tokens. This was one machine with a
+simulated link; a run on real laptops is still to do.
+
 ## Working on the dashboard
 
 ```bash
@@ -228,8 +256,6 @@ for building and demonstrating the page, not for measuring anything.
 
 ## What it does not do
 
-- **Peer-to-peer relay.** Every hop passes through the device that took the question
-  (issue #37). Relay would shorten the path; routing and failover would carry over.
 - **Verify results.** A member that lies about its hardware or returns wrong tensors
   is not detected.
 - **Detect an owner without an NVIDIA GPU.** Automatic detection reads `nvidia-smi`.
@@ -237,9 +263,10 @@ for building and demonstrating the page, not for measuring anything.
 - **Cross the open internet.** Devices find each other by broadcast on one network, or
   by being told one address (over Tailscale for different networks). The DHT (issue #15)
   would replace that.
-- **Share weights between devices.** Each device downloads the model itself the first
-  time (`scripts/setup.sh` does it), about 1.5 GB each. Two laptops on one hotspot each pull
-  it from the internet.
+- **Share weights with strangers easily.** In an invite swarm a device without the model
+  fetches it from the others (`pool/model_share.py`), checking every file. In the public
+  swarm at least two devices must offer the same copy, or the pool file must pin it
+  (`model_manifest`); otherwise the device downloads from the internet as before.
 - **Enforce fairness.** The page shows who gave and who used, but nothing is withheld from a
   device that took more than it gave (a credit scheme is issue #19).
 - **Run models bigger than Qwen3-0.6B.** Every measurement here, and the compression weights,
