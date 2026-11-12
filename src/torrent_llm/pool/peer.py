@@ -103,9 +103,8 @@ def launch(
         stop_token_ids=stop_token_ids,
         system_prompt=system_prompt,
         on_leave=leave,
+        extend=(lambda app: extend_app(app, daemon)) if extend_app is not None else None,
     )
-    if extend_app is not None:
-        extend_app(app, daemon)
     if cors_origins or cors_regex:
         app.add_middleware(
             CORSMiddleware,

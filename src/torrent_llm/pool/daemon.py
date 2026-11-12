@@ -300,7 +300,9 @@ class PeerDaemon:
                 name=self.name,
                 host=self.host,
                 control_port=self.control_port,
-                label=self.profile.label or self.name,
+                # Over the overlay ``self.name`` is a 32-character peer id; the device's
+                # own name (--name, the hostname by default) reads far better.
+                label=self.profile.label or self.profile.name or self.name,
                 os=platform.system(),
                 hostname=socket.gethostname(),
                 device=self.shards.device() or resolve_device(self.profile.device),

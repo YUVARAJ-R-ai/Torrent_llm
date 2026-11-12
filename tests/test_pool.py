@@ -198,6 +198,26 @@ def test_the_response_says_which_device_ran_each_stage(pool):
     assert body["totals"]["failovers"] == 0
 
 
+def test_extra_routes_win_over_the_dashboard(pool, tmp_path):
+    """The swarm adds routes (/node, /peers, ...) to a device that also serves the
+    dashboard at /; the dashboard must not answer for them (it did, with a 404 page)."""
+    from fastapi.testclient import TestClient
+
+    from torrent_llm.pool.api import create_peer_app
+
+    four_devices(pool)
+    (tmp_path / "index.html").write_text("<html>dashboard</html>")
+
+    def extend(app):
+        app.get("/node")(lambda: {"from": "swarm"})
+
+    client = TestClient(
+        create_peer_app(pool.peers["a"].daemon, CharTokenizer(), ui_dir=tmp_path, extend=extend)
+    )
+    assert client.get("/node").json() == {"from": "swarm"}
+    assert "dashboard" in client.get("/").text
+
+
 def test_a_request_can_replace_the_system_turn(pool):
     class TemplateTokenizer(CharTokenizer):
         def apply_chat_template(self, messages, **kwargs):

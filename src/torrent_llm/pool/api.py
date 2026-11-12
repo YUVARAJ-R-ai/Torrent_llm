@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -81,7 +82,10 @@ def create_peer_app(
     stop_token_ids: set[int] | None = None,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
     on_leave=None,
+    extend: Callable[[FastAPI], None] | None = None,
 ) -> FastAPI:
+    """The device's HTTP API. ``extend(app)`` adds more routes (the swarm's) before the
+    dashboard is mounted at ``/``, which would otherwise answer for them."""
     app = FastAPI(
         title=f"Torrent-LLM pool device: {daemon.name}",
         description=__doc__,
@@ -220,6 +224,9 @@ def create_peer_app(
         if on_leave is not None:
             threading.Timer(0.2, on_leave).start()
         return {"state": "leaving"}
+
+    if extend is not None:
+        extend(app)
 
     # The dashboard, served by the device itself so that opening any device in a
     # browser shows the pool, with nothing else installed. Mounted last so that
