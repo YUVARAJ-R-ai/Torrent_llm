@@ -599,7 +599,7 @@ def test_a_refused_or_rate_limited_peer_keeps_its_place_but_a_dead_one_does_not(
     assert _peer_seems_gone(RpcError("unavailable", "could not reach abcd1234: refused"))
     assert _peer_seems_gone(RpcError("deadline", "timed out"))
     assert not _peer_seems_gone(RpcError("unavailable", "too many connections"))
-    assert not _peer_seems_gone(RpcError("denied", "rate limited"))
+    assert not _peer_seems_gone(RpcError("busy", "rate limited"))
     assert not _peer_seems_gone(RpcError("too_large", "reply too large"))
 
 

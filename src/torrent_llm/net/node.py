@@ -590,7 +590,8 @@ class Node:
             if kind not in self._limited:
                 kind = "*"
             if not self._rate_limiter.allow(ctx.peer_id, kind):
-                raise RpcError("denied", "rate limited", peer=ctx.peer_id)
+                # "busy": try again later, which every caller already knows how to do.
+                raise RpcError("busy", "rate limited", peer=ctx.peer_id)
 
             if blocking:
                 return await self.loop.run_in_executor(self._executor, fn, ctx, header, body)

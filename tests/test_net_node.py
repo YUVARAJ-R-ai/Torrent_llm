@@ -364,7 +364,7 @@ def test_rate_limiting():
 
         with pytest.raises(RpcError) as exc_info:
             a.call(b.peer_id, "test.x", timeout=1.0)
-        assert exc_info.value.code == "denied"
+        assert exc_info.value.code == "busy"
     finally:
         a.close()
         b.close()
