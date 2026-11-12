@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 heartbeat=1,
             )
 
-        t = MemberTable(asker.peer_id)
+        t = MemberTable(asker.peer_id, suspect_after=1e9, down_after=1e9)  # nobody heartbeats here
         t.set_self(member(asker, ()))
         t.merge([member(d, (i,)) for i, d in enumerate(devices)])
         return t

@@ -248,7 +248,9 @@ def _table(s: Swarm, me: str, holders: dict[str, tuple[int, ...]], speed: dict[s
             heartbeat=1,
         )
 
-    table = MemberTable(s.nodes[me].peer_id)
+    table = MemberTable(
+        s.nodes[me].peer_id, suspect_after=1e9, down_after=1e9
+    )  # nobody heartbeats here
     table.set_self(member(me))
     table.merge([member(n) for n in s.nodes if n != me])
     return table
