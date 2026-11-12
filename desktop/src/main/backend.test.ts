@@ -259,6 +259,29 @@ describe("backend", () => {
       expect(manager.current().message).toContain("The device did not come up in time.");
     });
 
+    it("attaches to a device already running on this computer, and stop() asks it to leave", async () => {
+      const child = fakeChild(5010);
+      const deps = makeDeps(child, { health: vi.fn(async () => true) });
+      const manager = new BackendManager(deps, () => ({ ...DEFAULT_SETTINGS, executable: "/bin/torrent-peer" }));
+
+      expect(await manager.attachIfRunning()).toBe(true);
+      expect(manager.current().phase).toBe("running");
+      await expect(manager.start({ mode: "public" })).rejects.toThrow("already running");
+      expect(deps.spawn).not.toHaveBeenCalled();
+
+      await manager.stop();
+      expect(deps.leave).toHaveBeenCalledWith(DEFAULT_SETTINGS.controlPort, expect.any(String));
+      expect(deps.killGroup).not.toHaveBeenCalled();
+      expect(manager.current().phase).toBe("stopped");
+    });
+
+    it("does not attach when nothing answers", async () => {
+      const deps = makeDeps(fakeChild(5011), { health: vi.fn(async () => false) });
+      const manager = new BackendManager(deps, () => DEFAULT_SETTINGS);
+      expect(await manager.attachIfRunning()).toBe(false);
+      expect(manager.current().phase).not.toBe("running");
+    });
+
     it("start() throws when already running", async () => {
       const child = fakeChild(5003);
       const deps = makeDeps(child);

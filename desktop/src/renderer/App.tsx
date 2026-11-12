@@ -35,6 +35,12 @@ export type ScreenId =
   | "settings"
   | "diagnostics";
 
+/** The screen named in the URL hash (``#peers``), so a screen can be opened directly. */
+function initialScreen(): ScreenId {
+  const named = window.location.hash.replace(/^#/, "");
+  return SCREENS.find((s) => s.id === named)?.id ?? "home";
+}
+
 export interface ScreenProps {
   status: BackendStatus;
   go: (screen: ScreenId) => void;
@@ -75,7 +81,7 @@ function useTheme(): void {
 
 export default function App() {
   const status = useBackend();
-  const [screen, setScreen] = useState<ScreenId>("home");
+  const [screen, setScreen] = useState<ScreenId>(initialScreen);
   useTheme();
 
   if (!status) {

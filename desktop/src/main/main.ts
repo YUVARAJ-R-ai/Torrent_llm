@@ -51,8 +51,10 @@ function createWindow(): void {
   });
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   const devUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devUrl) void window.loadURL(devUrl);
-  else void window.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+  // TLLM_SCREEN=peers opens that screen first (used to capture every screen).
+  const hash = process.env.TLLM_SCREEN ?? "";
+  if (devUrl) void window.loadURL(hash ? `${devUrl}#${hash}` : devUrl);
+  else void window.loadFile(path.join(__dirname, "..", "renderer", "index.html"), { hash });
 
   // For checking the build without a person: TLLM_SCREENSHOT=out.png saves what the
   // window shows a moment after it loads, then quits.
@@ -94,6 +96,7 @@ ipcMain.handle("system:openExternal", async (_e, url: string) => {
 ipcMain.handle("system:copy", (_e, text: string) => clipboard.writeText(String(text)));
 
 app.whenReady().then(() => {
+  void backend.attachIfRunning();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -92,6 +92,8 @@ export class BackendManager extends EventEmitter {
   private child: ChildProcess | null = null;
   private logs: string[] = [];
   private stopping = false;
+  /** Showing a device this app did not start (one started from a terminal). */
+  private attached = false;
   private streams = {
     stdout: { decoder: new StringDecoder("utf8"), pending: "" },
     stderr: { decoder: new StringDecoder("utf8"), pending: "" },
@@ -137,8 +139,28 @@ export class BackendManager extends EventEmitter {
 
   // --- changing --------------------------------------------------------------------
 
+  /**
+   * Shows a device that is already running on this computer (say, started from a terminal)
+   * instead of offering to start a second one. Returns whether one was found.
+   * shortcut: an attached device that later dies is noticed only by failing API calls;
+   * poll /health if that ever matters.
+   */
+  async attachIfRunning(): Promise<boolean> {
+    if (this.child || this.attached) return this.attached;
+    const port = this.getSettings().controlPort;
+    if (!(await this.deps.health(port).catch(() => false))) return false;
+    if (this.child) return false; // started meanwhile
+    this.attached = true;
+    this.set({
+      phase: "running",
+      message: "Connected to the device already running on this computer.",
+      url: `http://127.0.0.1:${port}`,
+    });
+    return true;
+  }
+
   async start(options: StartOptions): Promise<BackendStatus> {
-    if (this.child) throw new Error("The device is already running. Stop it first.");
+    if (this.child || this.attached) throw new Error("The device is already running. Stop it first.");
     const executable = this.locate();
     if (!executable) {
       this.set({ phase: "missing", message: "Torrent-LLM is not installed on this computer yet.", executable: "" });
@@ -193,6 +215,14 @@ export class BackendManager extends EventEmitter {
 
   async stop(): Promise<BackendStatus> {
     const child = this.child;
+    if (!child && this.attached) {
+      // Not ours to kill: ask it to leave, and stop showing it.
+      const token = this.deps.readToken();
+      if (token) await this.deps.leave(this.getSettings().controlPort, token).catch(() => undefined);
+      this.attached = false;
+      this.set({ phase: "stopped", message: "Stopped.", pid: null, url: "" });
+      return this.current();
+    }
     if (!child) return this.current();
     this.stopping = true;
     this.set({ phase: "stopping", message: "Leaving the swarm..." });
