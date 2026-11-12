@@ -205,8 +205,9 @@ export default function DiagnosticsScreen({ status }: ScreenProps) {
             devices still connect through relays.
           </li>
           <li>
-            <strong style={{ color: "var(--text-primary)" }}>Model download:</strong> The
-            model download needs internet the first time you run a stage.
+            <strong style={{ color: "var(--text-primary)" }}>Model download:</strong> In an
+            invite swarm, a device without the model fetches it from the others and checks
+            every file. Otherwise it downloads from the internet the first time.
           </li>
           <li>
             <strong style={{ color: "var(--text-primary)" }}>
