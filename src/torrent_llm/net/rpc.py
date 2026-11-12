@@ -279,6 +279,11 @@ class Connection:
         return self._closed
 
     @property
+    def pending_calls(self) -> int:
+        """Calls in flight on this connection: sent and awaited, or being served."""
+        return len(self._pending) + len(self._running_handlers)
+
+    @property
     def rtt_ms(self) -> float | None:
         return self._rtt_ms
 

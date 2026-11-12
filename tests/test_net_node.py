@@ -778,3 +778,35 @@ def test_close_closes_the_event_loop():
     loop = a.loop
     a.close()
     assert loop.is_closed()
+
+
+def test_a_third_connection_never_drops_one_with_a_call_in_flight():
+    """While A waits on a call over its connection to B, B dialling A again (as a
+    reachability check does) must not close the connection carrying that call."""
+    a = _make_node()
+    b = _make_node()
+    started = threading.Event()
+
+    def slow(ctx, header, body):
+        started.set()
+        time.sleep(1.0)
+        return {"ok": True}, b""
+
+    b.register("slow", slow)
+    a.start()
+    b.start()
+    try:
+        a.connect(f"tcp://127.0.0.1:{b.listen_port}")
+        result: dict = {}
+        caller = threading.Thread(
+            target=lambda: result.setdefault("r", a.call(b.peer_id, "slow", timeout=5.0))
+        )
+        caller.start()
+        assert started.wait(3)
+        for _ in range(3):  # B dials A directly, again and again
+            b.connect(f"tcp://127.0.0.1:{a.listen_port}")
+        caller.join(5)
+        assert result["r"][0] == {"ok": True}
+    finally:
+        a.close()
+        b.close()

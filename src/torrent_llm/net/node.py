@@ -768,9 +768,23 @@ class Node:
                 peer_conns = self._connections.setdefault(conn.peer_id, [])
                 peer_conns.append(entry)
                 if len(peer_conns) > 2:
-                    oldest_entry = peer_conns.pop(0)
-                    oldest_to_close = oldest_entry.connection
+                    # Drop the oldest connection with nothing in flight. If every older
+                    # one is busy (a reachability dial-back arriving while we wait on
+                    # that very peer), the newcomer is the one to go.
+                    idle = [e for e in peer_conns[:-1] if e.connection.pending_calls == 0]
+                    victim = idle[0] if idle else peer_conns[-1]
+                    peer_conns.remove(victim)
+                    oldest_to_close = victim.connection
 
+        if oldest_to_close is conn:
+            # Every older connection to this peer is busy: keep them, use one of them.
+            await conn.close("superseded")
+            if inbound:
+                return conn
+            kept = self.connection(conn.peer_id)
+            if kept is None:
+                raise RpcError("unavailable", "connection superseded", peer=conn.peer_id)
+            return kept
         if oldest_to_close is not None:
             self._spawn(oldest_to_close.close("superseded"))
 
