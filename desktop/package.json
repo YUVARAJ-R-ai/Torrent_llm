@@ -44,14 +44,36 @@
   "build": {
     "appId": "ai.torrentllm.desktop",
     "productName": "Torrent-LLM",
-    "directories": { "output": "release" },
-    "files": ["dist/**", "package.json"],
-    "extraResources": [
-      { "from": "../scripts/install.sh", "to": "install/install.sh" },
-      { "from": "../scripts/install.ps1", "to": "install/install.ps1" }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "package.json"
     ],
-    "win": { "target": "nsis" },
-    "mac": { "target": "dmg", "category": "public.app-category.developer-tools" },
-    "linux": { "target": "AppImage", "category": "Utility" }
-  }
+    "extraResources": [
+      {
+        "from": "../scripts/install.sh",
+        "to": "install/install.sh"
+      },
+      {
+        "from": "../scripts/install.ps1",
+        "to": "install/install.ps1"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility",
+      "syncDesktopName": true
+    }
+  },
+  "author": "Torrent-LLM contributors",
+  "desktopName": "torrent-llm.desktop"
 }
