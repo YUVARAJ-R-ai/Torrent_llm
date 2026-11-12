@@ -1090,6 +1090,18 @@ class Node:
                 self._advertised = list(addresses)
                 self._record_dirty = True
 
+    def update_advertised(self, change: Callable[[list[str]], list[str]]) -> list[str]:
+        """Replace the extra advertised addresses with ``change(current)``, atomically,
+        so two services adjusting them at once never lose each other's update."""
+        with self._record_lock:
+            new = list(change(list(self._advertised)))
+            for addr in new:
+                parse_address(addr)
+            if self._advertised != new:
+                self._advertised = new
+                self._record_dirty = True
+            return new
+
     def set_attr(self, key: str, value: Any) -> None:
         """Set a metadata attribute in this node's signed record."""
         if not isinstance(key, str) or len(key) > 32:

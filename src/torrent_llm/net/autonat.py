@@ -298,24 +298,23 @@ class AutoNat:
         if confirmed_list:
             self._status = PUBLIC
             self._reachable = confirmed_list
-            existing = list(getattr(self._node, "_advertised", []))
-            base_advertised = [a for a in existing if a not in self._added]
-            new_advertised = list(base_advertised)
-            for addr in confirmed_list:
-                if addr not in new_advertised:
-                    new_advertised.append(addr)
-            # Only what this check put there is ours to take away later.
-            self._added = [a for a in confirmed_list if a not in base_advertised]
-            self._node.set_advertised(new_advertised)
+
+            def add_confirmed(existing: list[str]) -> list[str]:
+                base = [a for a in existing if a not in self._added]
+                # Only what this check put there is ours to take away later.
+                self._added = [a for a in confirmed_list if a not in base]
+                return base + self._added
+
+            self._node.update_advertised(add_confirmed)
             self._node.set_attr("public", True)
         elif answered_count == len(selected_helpers):
             self._status = PRIVATE
             self._reachable = []
             if self._added:
-                existing = list(getattr(self._node, "_advertised", []))
-                clean_advertised = [a for a in existing if a not in self._added]
-                self._added.clear()
-                self._node.set_advertised(clean_advertised)
+                added, self._added = self._added, []
+                self._node.update_advertised(
+                    lambda existing: [a for a in existing if a not in added]
+                )
             self._node.set_attr("public", False)
         else:
             self._status = UNKNOWN
